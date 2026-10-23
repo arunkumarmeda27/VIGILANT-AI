@@ -1,0 +1,9 @@
+{
+  "name": "vigilant-ai",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": { "dev": "vite", "dev:public": "vite --host 0.0.0.0 --port 5173", "build": "tsc -b && vite build", "lint": "eslint .", "preview": "vite preview", "preview:public": "vite preview --host 0.0.0.0 --port 4173" },
+  "dependencies": { "@vitejs/plugin-react": "latest", "lucide-react": "latest", "react": "latest", "react-dom": "latest", "react-router-dom": "latest" },
+  "devDependencies": { "@eslint/js": "latest", "@types/node": "latest", "@types/react": "latest", "@types/react-dom": "latest", "eslint": "latest", "eslint-plugin-react-hooks": "latest", "eslint-plugin-react-refresh": "latest", "typescript": "latest", "typescript-eslint": "latest", "vite": "latest" }
+}
