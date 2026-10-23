@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # VIGILANT AI
 
 Evidence-led institutional application validation prototype for SIH26261.
@@ -41,3 +42,6 @@ This frontend prototype provides routing, local form validation, uploads held in
 The expected production architecture separates a React frontend from FastAPI services for server-side authorization, document handling, OCR, SHA-256/perceptual deduplication, PostgreSQL migrations, and audit logging. Environment variables and authority credentials are intentionally not included in this prototype.
 
 When exposing this prototype through ngrok, treat the link as a presentation surface only. It has simulated authentication and must not receive real institutional documents or personal data.
+=======
+# VIGILANT-AI
+>>>>>>> be4d53925754ef73a6eddcb1f01de96303cd6001
