@@ -14,19 +14,36 @@ from app.api.routes import compliance as compliance_router
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(
+configured_origins = (
+    list(settings.CORS_ORIGINS)
+    if isinstance(settings.CORS_ORIGINS, list)
+    else [origin.strip() for origin in settings.CORS_ORIGINS.split(",") if origin.strip()]
+)
+if settings.APP_ENV.strip().lower() == "development":
+    # Keep local Vite origins available in development even when a local .env
+    # overrides CORS_ORIGINS for another environment.
+    configured_origins.extend(("http://localhost:5173", "http://127.0.0.1:5173"))
+configured_origins = list(dict.fromkeys(configured_origins))
+
+
+class CORSFastAPI(FastAPI):
+    """Apply CORS outside FastAPI's error middleware so 500s keep CORS headers."""
+
+    def build_middleware_stack(self):
+        fastapi_stack = super().build_middleware_stack()
+        return CORSMiddleware(
+            app=fastapi_stack,
+            allow_origins=configured_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+
+app = CORSFastAPI(
     title="VIGILANT AI API",
     version="0.1.0",
     description="AI-Powered Application Validation and Regulatory Compliance Verification"
-)
-
-# CORS Configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
 )
 
 # Include Routers
