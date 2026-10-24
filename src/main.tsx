@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useMemo, useRef, useState, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
+import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AlertTriangle, ArrowRight, ClipboardCheck, Eye, EyeOff, FileCheck2, FileText, LayoutDashboard, ListChecks, Menu, Search, ShieldCheck, UserRound, XCircle, Lock, Mail, Loader2 } from 'lucide-react';
 import './styles.css';
 
@@ -309,32 +309,40 @@ function StoreProvider({ children }: { children: React.ReactNode }) {
 const slug = (s: string) => s.toLowerCase().replaceAll(' ', '-');
 function Tag({ children }: { children: string }) { return <span className={`status ${slug(children)}`}>{children}</span> }
 function Brand() { return <Link className="brand" to="/"><span className="mark"><ShieldCheck size={19} /></span><span>VIGILANT <b>AI</b></span></Link> }
-const nav = [['/dashboard', LayoutDashboard, 'Overview'], ['/applications', FileText, 'Applications'], ['/review-queue', ListChecks, 'Review Queue'], ['/verification', FileCheck2, 'Document Verification'], ['/ai-evidence', Search, 'AI Evidence Search'], ['/compliance', ClipboardCheck, 'Compliance Assessment'], ['/reports', FileText, 'Validation Reports'], ['/audit-trail', ShieldCheck, 'Audit History'], ['/administration', UserRound, 'Administration']] as const;
+const navGroups = [
+  { label: 'WORKSPACE', items: [['/dashboard', LayoutDashboard, 'Overview'], ['/applications', FileText, 'Applications'], ['/review-queue', ListChecks, 'Review Queue']] },
+  { label: 'EVIDENCE', items: [['/verification', FileCheck2, 'Document Verification'], ['/ai-evidence', Search, 'AI Evidence Search']] },
+  { label: 'GOVERNANCE', items: [['/compliance', ClipboardCheck, 'Compliance Assessment'], ['/reports', FileText, 'Validation Reports'], ['/audit-trail', ShieldCheck, 'Audit History'], ['/administration', UserRound, 'Administration']] },
+] as const;
 
 function Shell({ title, children, liveData = false }: { title: string; children: React.ReactNode; liveData?: boolean }) {
   const [open, setOpen] = useState(false);
   const { user, logout } = useAuth();
   return (
     <div className="app-shell">
-      <aside className={open ? 'open' : ''}>
-        <Brand />
-        <p className="workspace">REVIEW WORKSPACE <span className="role-tag">{user?.role || 'GUEST'}</span></p>
-        <nav>
-          {nav.map(([to, I, label]) => (
-            <NavLink key={to} to={to} onClick={() => setOpen(false)}><I size={18} />{label}</NavLink>
-          ))}
+      {open && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setOpen(false)} />}
+      <aside id="workspace-navigation" className={open ? 'open' : ''}>
+        <div className="sidebar-brand-row"><Brand /><button className="sidebar-close" aria-label="Close navigation" onClick={() => setOpen(false)}><XCircle size={19} /></button></div>
+        <div className="workspace-label"><span className="workspace-dot" /> REVIEW WORKSPACE <span className="role-tag">{user?.role || 'GUEST'}</span></div>
+        <nav aria-label="Main navigation">
+          {navGroups.map(group => <div className="nav-group" key={group.label}>
+            <p className="nav-group-label">{group.label}</p>
+            {group.items.filter(([to]) => to !== '/administration' || user?.role === 'ADMIN').map(([to, I, label]) => (
+              <NavLink key={to} to={to} onClick={() => setOpen(false)}><I size={18} strokeWidth={1.8} /><span>{label}</span>{label === 'Review Queue' && <span className="nav-arrow" aria-hidden="true">›</span>}</NavLink>
+            ))}
+          </div>)}
         </nav>
         <div className="sidebar-user">
           <span className="avatar">{user?.full_name?.substring(0, 2).toUpperCase() || '??'}</span>
-          <span><b>{user?.full_name || 'Unknown'}</b><small>{user?.role || 'Guest'}</small></span>
-          <button className="logout-btn" onClick={logout} title="Sign out"><XCircle size={14} /></button>
+          <span className="sidebar-user-meta"><b>{user?.full_name || 'Unknown'}</b><small>{user?.role || 'Guest'}</small></span>
+          <button className="logout-btn" onClick={logout} title="Sign out" aria-label="Sign out"><XCircle size={16} /></button>
         </div>
       </aside>
       <div className="main-area">
         <header className="topbar">
-          <button className="menu" aria-label="Open navigation" onClick={() => setOpen(!open)}><Menu /></button>
-          <div><p className="crumb">Workspace / {title}</p><h1>{title}</h1></div>
-          <Tag>{liveData ? 'Backend data' : 'Demo data'}</Tag>
+          <button className="menu" aria-label="Open navigation" aria-expanded={open} aria-controls="workspace-navigation" onClick={() => setOpen(!open)}><Menu /></button>
+          <div className="topbar-title"><p className="crumb">VIGILANT AI <span>/</span> {title}</p><h1>{title}</h1></div>
+          <div className="topbar-context"><span className="context-indicator" /><span>{liveData ? 'Persisted workspace' : 'Interactive demo'}</span></div>
         </header>
         <main className="app-content">
           {!liveData && <p className="demo-notice">Frontend demonstration · All extraction, verification, anomaly and compliance outcomes are deterministic simulated data. Human review is required.</p>}
@@ -390,12 +398,12 @@ function Dashboard() {
   }, [token, logout]);
 
   const metrics = [
-    ['Accessible applications', applications.length],
-    ['Submitted', applications.filter(item => item.status === 'submitted').length],
-    ['Documents uploaded', documents.length],
-    ['Processing failures', documents.filter(item => item.processing_status === 'failed').length],
-    ['Processing pending', documents.filter(item => item.processing_status === 'pending' || item.processing_status === 'processing').length],
-    ['Needs human review', documents.filter(item => item.processing_status === 'ocr_unavailable').length],
+    ['Accessible applications', applications.length, '/applications'],
+    ['Submitted', applications.filter(item => item.status === 'submitted').length, '/applications?status=submitted'],
+    ['Documents uploaded', documents.length, '/verification'],
+    ['Processing failures', documents.filter(item => item.processing_status === 'failed').length, '/verification'],
+    ['Processing pending', documents.filter(item => item.processing_status === 'pending' || item.processing_status === 'processing').length, '/verification'],
+    ['Needs human review', documents.filter(item => item.processing_status === 'ocr_unavailable').length, '/verification'],
   ];
   const recent = [...applications].sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)).slice(0, 8);
 
@@ -406,7 +414,7 @@ function Dashboard() {
         <>
           {applications.length === 0 && <section className="content-section live-empty-state"><h2>No accessible applications</h2><p>The backend returned no applications for this account.</p><Link className="button primary" to="/applications">Open application register</Link></section>}
           <div className="metric-grid six">
-            {metrics.map(([label, value]) => <Link className="metric metric-link" to="/applications" key={label as string}><span>{label}</span><strong>{value}</strong><small>Backend data</small></Link>)}
+            {metrics.map(([label, value, href]) => <Link className="metric metric-link" to={href as string} key={label as string}><span>{label}</span><strong>{value}</strong><small>Open related records</small></Link>)}
           </div>
           <section className="content-section">
             <Heading title="Recently updated applications" text="Ordered by the backend-provided updated timestamp. No simulated application records are included." />
@@ -585,7 +593,8 @@ function Applications() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('All');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [statusFilter, setStatusFilter] = useState(() => searchParams.get('status') || 'All');
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
@@ -644,7 +653,11 @@ function Applications() {
           <>
             <div className="filters">
               <label className="search"><Search size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search ID, reference, institution or type" /></label>
-              <select aria-label="Filter application status" value={statusFilter} onChange={event => setStatusFilter(event.target.value)}>
+              <select aria-label="Filter application status" value={statusFilter} onChange={event => {
+                const nextStatus = event.target.value;
+                setStatusFilter(nextStatus);
+                setSearchParams(nextStatus === 'All' ? {} : { status: nextStatus });
+              }}>
                 <option>All</option>
                 {Array.from(new Set(applications.map(application => application.status || 'Unknown'))).map(item => <option key={item}>{item}</option>)}
               </select>
