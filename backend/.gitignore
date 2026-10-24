@@ -1,10 +1,27 @@
+# Python virtual environments
+venv/
+.venv/
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Python caches and test artifacts
 __pycache__/
 *.py[cod]
-*$py.class
-.env
-.venv
-env/
-venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# TypeScript build artifacts
+*.tsbuildinfo
+
+# Local document storage
+document_storage/
+storage/
