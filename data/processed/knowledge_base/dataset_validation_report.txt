@@ -1,0 +1,19 @@
+VIGILANT-AI DATASET VALIDATION
+Master rules: 84
+Blank requirement_text: 0
+Duplicate rule IDs: 0
+Invalid page references: 0
+
+Rules by category:
+dataset_category
+document          21
+facilities        16
+faculty           17
+infrastructure    10
+pgdm_pgcm         20
+
+Page references requiring review:
+None detected by the format/range check.
+
+Important: page-format validation does not prove that a rule points
+to the correct passage or that its content is legally accurate.
