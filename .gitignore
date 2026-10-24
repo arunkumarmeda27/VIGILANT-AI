@@ -1,21 +1,24 @@
+# Node.js
 node_modules/
 dist/
-.env
-.env.local
-*.log
+
+# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
-*.tsbuildinfo
-
-node_modules/
-dist/
 .venv/
 venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
+
+# TypeScript
 *.tsbuildinfo
+
+# Environment variables and secrets
 .env
 .env.*
 !.env.example
+
+# Logs
+*.log
+
+# Local backup
+backend/backend_backup/
