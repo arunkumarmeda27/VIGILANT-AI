@@ -25,6 +25,13 @@ _SAFE_METADATA_KEYS = {
     "pages_processed",
     "reason",
     "name",
+    "assessment_id",
+    "review_id",
+    "reviewer_id",
+    "previous_reviewer_id",
+    "outcome",
+    "findings_created",
+    "rules_evaluated",
 }
 
 
@@ -57,6 +64,7 @@ def _safe_metadata(raw: str | None) -> dict[str, object]:
 def list_audit_events(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    application_id: int | None = Query(default=None, gt=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -86,12 +94,40 @@ def list_audit_events(
         accessible_document_ids = db.query(cast(Document.id, String)).filter(
             Document.application_id.in_(accessible_applications)
         )
+        accessible_assessment_ids = db.query(cast(ComplianceAssessment.id, String)).filter(
+            ComplianceAssessment.application_id.in_(accessible_applications)
+        )
         query = query.filter(
             or_(
                 (AuditEvent.entity_type == "application")
                 & AuditEvent.entity_id.in_(accessible_application_ids),
                 (AuditEvent.entity_type == "document")
                 & AuditEvent.entity_id.in_(accessible_document_ids),
+                (AuditEvent.entity_type == "compliance_assessment")
+                & AuditEvent.entity_id.in_(accessible_assessment_ids),
+            )
+        )
+
+    if application_id is not None:
+        if current_user.role != UserRole.ADMIN.value:
+            accessible_application = db.query(Application.id).filter(
+                Application.id == application_id,
+                Application.id.in_(accessible_applications),
+            ).first()
+            if accessible_application is None:
+                raise HTTPException(status_code=404, detail="Application not found")
+        application_ids = db.query(Application.id).filter(Application.id == application_id)
+        application_document_ids = db.query(cast(Document.id, String)).filter(
+            Document.application_id.in_(application_ids)
+        )
+        application_assessment_ids = db.query(cast(ComplianceAssessment.id, String)).filter(
+            ComplianceAssessment.application_id.in_(application_ids)
+        )
+        query = query.filter(
+            or_(
+                (AuditEvent.entity_type == "application") & (AuditEvent.entity_id == str(application_id)),
+                (AuditEvent.entity_type == "document") & AuditEvent.entity_id.in_(application_document_ids),
+                (AuditEvent.entity_type == "compliance_assessment") & AuditEvent.entity_id.in_(application_assessment_ids),
             )
         )
 

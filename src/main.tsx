@@ -67,6 +67,30 @@ type ComplianceAssessment = {
   assessed_at: string;
   reviewer_name: string | null;
 };
+type AssessmentReview = {
+  id: number;
+  assessment_id: number;
+  reviewer_id: number;
+  reviewer_name: string;
+  outcome: 'evidence_accepted' | 'evidence_rejected' | 'information_requested' | 'further_investigation';
+  note: string;
+  created_at: string;
+};
+type ComplianceAssessmentDetail = ComplianceAssessment & {
+  application_status: string;
+  rule_description: string;
+  assigned_reviewer_id: number | null;
+  document_evidence: {
+    document_id: number;
+    filename: string;
+    document_type: string;
+    processing_status: string;
+    extraction_method: string;
+    fields: Record<string, ExtractedField>;
+  }[];
+  reviews: AssessmentReview[];
+};
+type AssessmentReviewer = { id: number; full_name: string; email: string };
 type ComplianceAssessmentPage = { items: ComplianceAssessment[]; total: number };
 type ConsistencyResultRecord = {
   id: number;
@@ -811,7 +835,7 @@ function PersistedApplicationDetail() {
       requestApi<PersistedDocument[]>(`/api/applications/${id}/documents`, token),
       requestApi<ConsistencyRunHistory>(`/api/applications/${id}/consistency-runs`, token),
       requestApi<PersistedFinding[]>(`/api/applications/${id}/findings`, token),
-      requestApi<ComplianceAssessmentPage>('/api/compliance-assessments/?limit=200', token),
+      requestApi<ComplianceAssessmentPage>(`/api/compliance-assessments/?application_id=${id}&limit=200`, token),
     ]).then(([app, docs, history, persistedFindings, assessmentPage]) => {
       if (cancelled) return;
       setApplication(app);
@@ -863,7 +887,7 @@ function PersistedApplicationDetail() {
     setWorkflowNotice(null);
     try {
       await requestApi(`/api/applications/${application.id}/validate-all`, token, { method: 'POST' });
-      const assessmentPage = await requestApi<ComplianceAssessmentPage>('/api/compliance-assessments/?limit=200', token);
+      const assessmentPage = await requestApi<ComplianceAssessmentPage>(`/api/compliance-assessments/?application_id=${application.id}&limit=200`, token);
       setAssessments(assessmentPage.items.filter(item => item.application_id === application.id));
       setFindings(await requestApi<PersistedFinding[]>(`/api/applications/${application.id}/findings`, token));
       setWorkflowNotice('Registry assessments saved and loaded from the backend. Review their source and scope status below.');
@@ -985,6 +1009,7 @@ function PersistedApplicationDetail() {
               </button>
               <Link className="button secondary" to={`/verification?application_id=${application.id}`}>Manage and process documents</Link>
             </div>
+            {documents.filter(document => document.processing_status === 'completed').length < 2 && <p className="validation-meta">Cross-document comparison requires at least two successfully processed documents. It compares extracted fields; it does not verify document authenticity.</p>}
             <p className="validation-disclaimer">Regulatory statuses reflect the configured registry and extracted evidence only. Candidate rules may be synthetic, unapproved, or not confirmed current; results are not official legal or compliance determinations.</p>
           </section>
           <section className="content-section">
@@ -1305,10 +1330,11 @@ function AssessmentWorkspace({ title }: { title: string }) {
         {error && <div className="validation-error" role="alert"><AlertTriangle size={18} aria-hidden="true" />{error}</div>}
         {loading ? <p role="status">Loading authorized assessments…</p> : page?.items.length ? (
           <>
-            <div className="table-wrap"><table><thead><tr><th>Application</th><th>Institution</th><th>Rule</th><th>Category</th><th>Recorded status</th><th>Reviewer</th><th>Assessed</th><th>Explanation</th></tr></thead>
+            <div className="table-wrap"><table><thead><tr><th>Application</th><th>Institution</th><th>Rule</th><th>Category</th><th>Recorded status</th><th>Reviewer</th><th>Assessed</th><th>Explanation</th><th>Review</th></tr></thead>
               <tbody>{page.items.map(item => <tr key={item.id}>
                 <td><Link className="table-link" to={`/applications/${item.application_id}`}>{item.application_reference}</Link></td>
                 <td>{item.entity_name}</td><td>{item.rule_code} · {item.rule_title}</td><td>{item.category}</td><td><Tag>{item.status}</Tag></td><td>{item.reviewer_name || 'Unassigned'}</td><td>{new Date(item.assessed_at).toLocaleString()}</td><td>{item.explanation}</td>
+                <td><Link className="button secondary" to={`/compliance-assessments/${item.id}`}>Open review</Link></td>
               </tr>)}</tbody>
             </table></div>
             <div className="live-page-actions audit-pagination">
@@ -1325,6 +1351,141 @@ function AssessmentWorkspace({ title }: { title: string }) {
 
 function ReviewQueue() { return <AssessmentWorkspace title="Human review queue" /> }
 
+function AssessmentReviewPage() {
+  const { id = '' } = useParams();
+  const { token, user, logout } = useAuth();
+  const [assessment, setAssessment] = useState<ComplianceAssessmentDetail | null>(null);
+  const [reviewers, setReviewers] = useState<AssessmentReviewer[]>([]);
+  const [reviewerId, setReviewerId] = useState('');
+  const [outcome, setOutcome] = useState<AssessmentReview['outcome']>('information_requested');
+  const [note, setNote] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const reload = async () => {
+    if (!token) return;
+    const item = await requestApi<ComplianceAssessmentDetail>(`/api/compliance-assessments/${id}`, token);
+    setAssessment(item);
+    setReviewerId(item.assigned_reviewer_id ? String(item.assigned_reviewer_id) : '');
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    if (!token) { setLoading(false); return () => { cancelled = true; }; }
+    Promise.all([
+      requestApi<ComplianceAssessmentDetail>(`/api/compliance-assessments/${id}`, token),
+      user?.role === 'ADMIN' ? requestApi<AssessmentReviewer[]>('/api/compliance-assessments/reviewers', token) : Promise.resolve([]),
+    ]).then(([item, availableReviewers]) => {
+      if (cancelled) return;
+      setAssessment(item);
+      setReviewerId(item.assigned_reviewer_id ? String(item.assigned_reviewer_id) : '');
+      setReviewers(availableReviewers);
+    }).catch(reason => {
+      if (cancelled) return;
+      if (reason instanceof ApiRequestError && reason.status === 401) {
+        logout();
+        setError('Your session has expired. Please sign in again.');
+      } else {
+        setError(reason instanceof ApiRequestError ? reason.message : 'Could not load this assessment review.');
+      }
+    }).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [id, token, user?.role, logout]);
+
+  const saveReview = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!token || saving) return;
+    setSaving(true); setError(null); setNotice(null);
+    try {
+      await requestApi(`/api/compliance-assessments/${id}/reviews`, token, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outcome, note: note.trim() }),
+      });
+      await reload();
+      setNote('');
+      setNotice('Your decision was saved. The automated assessment remains unchanged.');
+    } catch (reason) {
+      setError(reason instanceof ApiRequestError ? reason.message : 'Could not save the review decision.');
+    } finally { setSaving(false); }
+  };
+
+  const assignReviewer = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!token || !reviewerId || saving) return;
+    setSaving(true); setError(null); setNotice(null);
+    try {
+      await requestApi(`/api/compliance-assessments/${id}/assignment`, token, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reviewer_id: Number(reviewerId) }),
+      });
+      await reload();
+      setNotice('Reviewer assignment was saved and added to audit history.');
+    } catch (reason) {
+      setError(reason instanceof ApiRequestError ? reason.message : 'Could not assign this reviewer.');
+    } finally { setSaving(false); }
+  };
+
+  if (loading) return <Shell title="Assessment review" liveData><p role="status">Loading persisted review details…</p></Shell>;
+  return (
+    <Shell title="Assessment review" liveData>
+      <div className="live-page-actions no-print"><Link className="button secondary" to="/review-queue">Back to review queue</Link></div>
+      {error && <div className="validation-error" role="alert"><AlertTriangle size={18} aria-hidden="true" />{error}</div>}
+      {notice && <p className="validation-meta" role="status">{notice}</p>}
+      {assessment && <>
+        <section className="content-section">
+          <Heading title={`${assessment.rule_code} · ${assessment.rule_title}`} text="Recorded automated assessment and its source evidence. Human decisions are appended separately and do not change application approval status." />
+          <dl className="validation-rule-meta">
+            <div><dt>Application</dt><dd>{assessment.application_reference} · database ID {assessment.application_id}</dd></div>
+            <div><dt>Institution</dt><dd>{assessment.entity_name}</dd></div>
+            <div><dt>Category</dt><dd>{assessment.category}</dd></div>
+            <div><dt>Application status</dt><dd>{assessment.application_status}</dd></div>
+            <div><dt>Automated assessment</dt><dd>{assessment.status} · {new Date(assessment.assessed_at).toLocaleString()}</dd></div>
+            <div><dt>Assigned reviewer</dt><dd>{assessment.reviewer_name || 'Unassigned'}</dd></div>
+          </dl>
+          <h3>Recorded explanation</h3><p>{assessment.explanation}</p>
+          <h3>Stored rule description</h3><p>{assessment.rule_description || 'No rule description is stored.'}</p>
+          <p className="validation-disclaimer">Rule provenance and official applicability are not included in this assessment record. Treat synthetic or unverified rules as advisory.</p>
+        </section>
+        {user?.role === 'ADMIN' && <section className="content-section">
+          <Heading title="Assign reviewer" text="Only active backend reviewer accounts can be assigned. The server enforces this permission." />
+          {reviewers.length ? <form className="live-page-actions" onSubmit={assignReviewer}>
+            <label>Reviewer<select required value={reviewerId} onChange={event => setReviewerId(event.target.value)}><option value="">Choose a reviewer</option>{reviewers.map(reviewer => <option key={reviewer.id} value={reviewer.id}>{reviewer.full_name} · {reviewer.email}</option>)}</select></label>
+            <button className="button primary" disabled={saving || !reviewerId}>{saving ? 'Saving…' : 'Save assignment'}</button>
+          </form> : <p>No active reviewer accounts are available to assign.</p>}
+        </section>}
+        <section className="content-section">
+          <Heading title="Linked document evidence" text="Extracted values remain unverified and are shown with source excerpts and page references when recorded." />
+          {assessment.document_evidence.length ? assessment.document_evidence.map(document => (
+            <article className="validation-check" key={document.document_id}>
+              <strong>Document {document.document_id} · {document.filename} · {document.document_type}</strong>
+              <p>Processing: {document.processing_status} · Extraction: {document.extraction_method}</p>
+              {Object.entries(document.fields).map(([name, field]) => <p key={name}><b>{name.replaceAll('_', ' ')}:</b> {field.value ?? 'Not extracted'} · Unverified{field.evidence ? ` · Source: ${field.evidence}` : ''}{field.page ? ` · Page ${field.page}` : ''}</p>)}
+            </article>
+          )) : <p>No documents are linked to this application's current record.</p>}
+        </section>
+        <section className="content-section">
+          <Heading title="Human review history" text="Decisions are append-only, attributed to the authenticated reviewer, and recorded in audit history." />
+          {assessment.reviews.length ? assessment.reviews.map(review => <article className="validation-check" key={review.id}>
+            <strong>{review.outcome.replaceAll('_', ' ')} · {review.reviewer_name}</strong><p>{review.note || 'No note added.'}</p><small>{new Date(review.created_at).toLocaleString()}</small>
+          </article>) : <p>No human decisions have been recorded for this assessment.</p>}
+          {user?.role === 'REVIEWER' && assessment.assigned_reviewer_id === user.id && <form className="application-form" onSubmit={saveReview}>
+            <label>Decision<select value={outcome} onChange={event => setOutcome(event.target.value as AssessmentReview['outcome'])}>
+              <option value="evidence_accepted">Accept evidence</option><option value="evidence_rejected">Reject evidence</option><option value="information_requested">Request additional information</option><option value="further_investigation">Mark for further investigation</option>
+            </select></label>
+            <label>Reviewer note<textarea maxLength={2000} value={note} onChange={event => setNote(event.target.value)} /></label>
+            <button className="button primary" disabled={saving}>{saving ? 'Saving…' : 'Record decision'}</button>
+          </form>}
+          {user?.role === 'REVIEWER' && assessment.assigned_reviewer_id !== user.id && <p>This assessment is not assigned to your reviewer account; the server will reject decision attempts.</p>}
+        </section>
+      </>}
+    </Shell>
+  );
+}
+
 class ApiRequestError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
@@ -1339,6 +1500,43 @@ async function requestApi<T>(path: string, token: string, init: RequestInit = {}
     throw new ApiRequestError(response.status, await responseError(response, `Request failed (${response.status}).`));
   }
   return await response.json() as T;
+}
+
+async function loadAllComplianceAssessments(token: string, applicationId?: number): Promise<ComplianceAssessment[]> {
+  const results: ComplianceAssessment[] = [];
+  const limit = 200;
+  let offset = 0;
+  let total = Number.POSITIVE_INFINITY;
+  while (offset < total) {
+    const filter = applicationId === undefined ? '' : `&application_id=${applicationId}`;
+    const page = await requestApi<ComplianceAssessmentPage>(
+      `/api/compliance-assessments/?limit=${limit}&offset=${offset}${filter}`,
+      token,
+    );
+    results.push(...page.items);
+    total = page.total;
+    if (!page.items.length) break;
+    offset += page.items.length;
+  }
+  return results;
+}
+
+async function loadAllAuditEvents(token: string, applicationId: number): Promise<AuditEventItem[]> {
+  const results: AuditEventItem[] = [];
+  const limit = 200;
+  let offset = 0;
+  let total = Number.POSITIVE_INFINITY;
+  while (offset < total) {
+    const page = await requestApi<AuditEventPage>(
+      `/api/audit-events/?application_id=${applicationId}&limit=${limit}&offset=${offset}`,
+      token,
+    );
+    results.push(...page.items);
+    total = page.total;
+    if (!page.items.length) break;
+    offset += page.items.length;
+  }
+  return results;
 }
 
 function GlobalVerification() {
@@ -1397,6 +1595,7 @@ function GlobalVerification() {
   useEffect(() => {
     let cancelled = false;
     setDocuments([]);
+    setProcessingResults({});
     setValidation(null);
     setError(null);
     if (!token || !selectedApplicationId) {
@@ -1405,7 +1604,24 @@ function GlobalVerification() {
     }
     setDocumentsLoading(true);
     requestApi<PersistedDocument[]>(`/api/applications/${selectedApplicationId}/documents`, token)
-      .then(items => { if (!cancelled) setDocuments(items); })
+      .then(async items => {
+        const persistedResults = await Promise.all(items
+          .filter(item => ['completed', 'ocr_unavailable', 'failed'].includes(item.processing_status))
+          .map(async item => {
+            try {
+              const result = await requestApi<DocumentProcessingResult>(
+                `/api/applications/${selectedApplicationId}/documents/${item.id}/processing-result`, token,
+              );
+              return [item.id, result] as const;
+            } catch (reason) {
+              if (reason instanceof ApiRequestError && reason.status === 404) return null;
+              throw reason;
+            }
+          }));
+        if (cancelled) return;
+        setDocuments(items);
+        setProcessingResults(Object.fromEntries(persistedResults.filter((entry): entry is readonly [number, DocumentProcessingResult] => entry !== null)));
+      })
       .catch(reason => {
         if (cancelled) return;
         if (reason instanceof ApiRequestError && reason.status === 401) {
@@ -1691,20 +1907,16 @@ function Reports() {
       setLoading(false);
       return () => { cancelled = true; };
     }
-    Promise.all([
-      requestApi<PersistedApplication[]>('/api/applications/', token),
-      requestApi<ComplianceAssessmentPage>('/api/compliance-assessments/', token),
-    ]).then(async ([apps, assessmentPage]) => {
-      const docs = await Promise.all(apps.map(app =>
-        requestApi<PersistedDocument[]>(`/api/applications/${app.id}/documents`, token),
-      ));
+    requestApi<PersistedApplication[]>('/api/applications/', token)
+      .then(async apps => {
+      const [docs, assessmentLists] = await Promise.all([
+        Promise.all(apps.map(app => requestApi<PersistedDocument[]>(`/api/applications/${app.id}/documents`, token))),
+        Promise.all(apps.map(app => loadAllComplianceAssessments(token, app.id))),
+      ]);
       if (cancelled) return;
       setApplications(apps);
       setDocumentCounts(Object.fromEntries(apps.map((app, index) => [app.id, docs[index].length])));
-      setAssessmentCounts(assessmentPage.items.reduce<Record<number, number>>((counts, item) => {
-        counts[item.application_id] = (counts[item.application_id] || 0) + 1;
-        return counts;
-      }, {}));
+      setAssessmentCounts(Object.fromEntries(apps.map((app, index) => [app.id, assessmentLists[index].length])));
     }).catch(reason => {
       if (cancelled) return;
       if (reason instanceof ApiRequestError && reason.status === 401) {
@@ -1727,7 +1939,7 @@ function Reports() {
               <div>
                 <h3>{application.reference} · {application.entity_name}</h3>
                 <p>Database ID {application.id} · {application.app_type} · Status: {application.status || 'Unknown'}</p>
-                <p>Persisted documents: {documentCounts[application.id] ?? 0} · Assessments in first API page: {assessmentCounts[application.id] ?? 0}</p>
+                <p>Persisted documents: {documentCounts[application.id] ?? 0} · Persisted assessments: {assessmentCounts[application.id] ?? 0}</p>
                 <small>These are record counts only. They do not indicate authenticity, completeness, or regulatory compliance.</small>
               </div>
               <Link className="button secondary" to={`/reports/${application.id}`}>Open record summary</Link>
@@ -1745,6 +1957,11 @@ function PersistedReport() {
   const [application, setApplication] = useState<PersistedApplication | null>(null);
   const [documents, setDocuments] = useState<PersistedDocument[]>([]);
   const [assessments, setAssessments] = useState<ComplianceAssessment[]>([]);
+  const [runs, setRuns] = useState<ConsistencyRunRecord[]>([]);
+  const [findings, setFindings] = useState<PersistedFinding[]>([]);
+  const [auditEvents, setAuditEvents] = useState<AuditEventItem[]>([]);
+  const [processingResults, setProcessingResults] = useState<Record<number, DocumentProcessingResult>>({});
+  const [generatedAt, setGeneratedAt] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -1757,12 +1974,33 @@ function PersistedReport() {
     Promise.all([
       requestApi<PersistedApplication>(`/api/applications/${id}`, token),
       requestApi<PersistedDocument[]>(`/api/applications/${id}/documents`, token),
-      requestApi<ComplianceAssessmentPage>('/api/compliance-assessments/', token),
-    ]).then(([app, docs, assessmentPage]) => {
+      loadAllComplianceAssessments(token, Number(id)),
+      requestApi<ConsistencyRunHistory>(`/api/applications/${id}/consistency-runs`, token),
+      requestApi<PersistedFinding[]>(`/api/applications/${id}/findings`, token),
+      loadAllAuditEvents(token, Number(id)),
+    ]).then(async ([app, docs, assessmentItems, history, persistedFindings, events]) => {
+      const extracted = await Promise.all(docs
+        .filter(document => ['completed', 'ocr_unavailable', 'failed'].includes(document.processing_status))
+        .map(async document => {
+          try {
+            const result = await requestApi<DocumentProcessingResult>(
+              `/api/applications/${id}/documents/${document.id}/processing-result`, token,
+            );
+            return [document.id, result] as const;
+          } catch (reason) {
+            if (reason instanceof ApiRequestError && reason.status === 404) return null;
+            throw reason;
+          }
+        }));
       if (cancelled) return;
       setApplication(app);
       setDocuments(docs);
-      setAssessments(assessmentPage.items.filter(item => item.application_id === app.id));
+      setAssessments(assessmentItems);
+      setRuns(history.items);
+      setFindings(persistedFindings);
+      setAuditEvents(events);
+      setProcessingResults(Object.fromEntries(extracted.filter((item): item is readonly [number, DocumentProcessingResult] => item !== null)));
+      setGeneratedAt(new Date().toLocaleString());
     }).catch(reason => {
       if (cancelled) return;
       if (reason instanceof ApiRequestError && reason.status === 401) {
@@ -1781,15 +2019,32 @@ function PersistedReport() {
       {error && <div className="validation-error" role="alert"><AlertTriangle size={18} aria-hidden="true" />{error}</div>}
       {application && (
         <article className="print-report">
-          <p className="eyebrow">Persisted application summary · ID {application.id}</p>
+          <header className="report-header"><p className="eyebrow">VIGILANT AI · reviewer record summary</p><small>Generated {generatedAt}</small></header>
           <h2>{application.entity_name}</h2>
-          <p>{application.reference} · {application.app_type} · Status: {application.status || 'Unknown'}</p>
+          <p>{application.reference} · Database ID {application.id} · {application.app_type} · Application status: {application.status || 'Unknown'}</p>
           <p>Created {new Date(application.created_at).toLocaleString()} · Updated {new Date(application.updated_at).toLocaleString()}</p>
           <h3>Persisted document records</h3>
-          {documents.length ? documents.map(document => <p key={document.id}>Document {document.id} · {document.original_filename} · {document.doc_type} · {document.processing_status}</p>) : <p>No documents are currently attached.</p>}
-          <h3>Stored reviewer assessments in first API page</h3>
+          {documents.length ? documents.map(document => <section className="report-evidence" key={document.id}>
+            <p><b>Document {document.id} · {document.original_filename}</b> · {document.doc_type} · Processing: {document.processing_status}</p>
+            {processingResults[document.id] ? <>
+              <small>Extraction: {processingResults[document.id].extraction_method} · {processingResults[document.id].pages_processed} page(s) · extracted values are unverified</small>
+              {Object.entries(processingResults[document.id].fields).map(([fieldName, field]) => <p key={fieldName}><b>{fieldName.replaceAll('_', ' ')}:</b> {field.value ?? 'Not extracted'} · Unverified{field.evidence ? ` · ${field.evidence}` : ''}{field.page ? ` · Page ${field.page}` : ''}</p>)}
+            </> : <small>No persisted extraction result is available for this document.</small>}
+          </section>) : <p>No documents are currently attached.</p>}
+          <h3>Persisted automated assessments</h3>
           {assessments.length ? assessments.map(item => <p key={item.id}><b>{item.rule_code} · {item.rule_title}</b> — {item.status}. {item.explanation} Reviewer: {item.reviewer_name || 'Unassigned'}.</p>) : <p>No persisted assessments are available for this application.</p>}
-          <p className="validation-disclaimer">This record summary reports stored data only. It does not establish document authenticity, application completeness, or institutional compliance. Candidate regulatory rules that have not passed review remain unassessed.</p>
+          <h3>Cross-document validation history</h3>
+          {runs.length ? runs.map(run => <section className="report-evidence" key={run.id}><p><b>Run {run.id}</b> · {run.status} · {run.comparisons_count} comparison(s) · {new Date(run.created_at).toLocaleString()}</p>
+            {run.results.length ? run.results.map(result => <p key={result.id}><b>{result.category} · {result.field}:</b> {result.doc1_filename}: {result.val1 ?? 'No value'} ↔ {result.doc2_filename}: {result.val2 ?? 'No value'}. {result.explanation}</p>) : <small>No comparable fields were recorded.</small>}
+          </section>) : <p>No consistency runs are stored for this application.</p>}
+          <h3>Persisted findings and reviewer decisions</h3>
+          {findings.length ? findings.map(finding => <section className="report-evidence" key={finding.id}><p><b>Finding {finding.id} · {finding.finding_type} · {finding.severity} · {finding.status}</b> · {finding.description}</p>
+            {finding.reviews.map(review => <p key={review.id}>Human review: {review.outcome.replaceAll('_', ' ')} · {review.reviewer_name} · {new Date(review.created_at).toLocaleString()}{review.note ? ` · ${review.note}` : ''}</p>)}
+          </section>) : <p>No findings are stored. Their absence does not imply compliance.</p>}
+          <h3>Authorized audit event references</h3>
+          {auditEvents.length ? auditEvents.map(event => <p key={event.id}>Event {event.id} · {event.action} · {event.actor_name || 'Actor unavailable'} · {new Date(event.timestamp).toLocaleString()}</p>) : <p>No authorized audit events are available for this application.</p>}
+          <p className="validation-disclaimer">Automated assessments are not human decisions. This report does not establish document authenticity, application completeness, fraud, or institutional compliance. Synthetic and unapproved rules remain advisory; final decisions belong to authorized human reviewers.</p>
+          <footer className="report-footer"><span>VIGILANT AI · SIH26261 prototype</span><span>Generated {generatedAt} · Application {application.reference}</span></footer>
           <button className="button primary no-print" onClick={() => window.print()}>Print record summary</button>
         </article>
       )}
@@ -1801,7 +2056,7 @@ function Report() { const { id = '' } = useParams(); const { apps } = useStore()
 
 function ReportRouteView() { const { id = '' } = useParams(); return /^\d+$/.test(id) ? <PersistedReport /> : <Report /> }
 
-function Admin() { const [r, setR] = useState('Reviewer'); return <Shell title="Administration"><section className="content-section"><Heading title="Demo roles and permissions" text="This visible role switch is not authentication or real authorization; enforcement belongs in a future backend." /><label className="role-switch">Demo role<select value={r} onChange={e => setR(e.target.value)}><option>Administrator</option><option>Reviewer</option><option>Read-only observer</option></select></label><div className="rule-list"><div><b>{r}</b><span>{r === 'Administrator' ? 'Can configure future rules and reviewers.' : r === 'Reviewer' ? 'Can review findings and add comments.' : 'Can inspect records and reports only.'}</span><Tag>Frontend demo</Tag></div></div></section></Shell> }
+function Admin() { const { user } = useAuth(); return <Shell title="Administration" liveData><section className="content-section"><Heading title="Signed-in account" text="Access is enforced by the backend for each request. Changing the displayed role cannot grant permissions." /><dl className="validation-rule-meta"><div><dt>Account</dt><dd>{user?.full_name} · {user?.email}</dd></div><div><dt>Server role</dt><dd>{user?.role}</dd></div><div><dt>Institution</dt><dd>{user?.role === 'ADMIN' ? 'Platform-wide administrative access' : 'Assigned institution scope'}</dd></div></dl><div className="live-page-actions"><Link className="button secondary" to="/review-queue">Open persisted assessment review queue</Link><Link className="button secondary" to="/audit-trail">Open authorized audit history</Link></div><p className="validation-disclaimer">This prototype does not provide a live regulatory-rule configuration interface. Candidate rules remain subject to source, currentness, and applicability review.</p></section></Shell> }
 
 function Login() {
   const nav = useNavigate();
@@ -1907,6 +2162,7 @@ function Root() {
       <Route path="/verification" element={user ? <GlobalVerification /> : <Navigate to="/login" replace />} />
       <Route path="/ai-evidence" element={user ? <AIEvidenceSearch /> : <Navigate to="/login" replace />} />
       <Route path="/compliance" element={user ? <GlobalCompliance /> : <Navigate to="/login" replace />} />
+      <Route path="/compliance-assessments/:id" element={user ? <AssessmentReviewPage /> : <Navigate to="/login" replace />} />
       <Route path="/reports" element={user ? <Reports /> : <Navigate to="/login" replace />} />
       <Route path="/reports/:id" element={user ? <ReportRouteView /> : <Navigate to="/login" replace />} />
       <Route path="/audit-trail" element={user ? <GlobalAudit /> : <Navigate to="/login" replace />} />

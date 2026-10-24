@@ -497,6 +497,32 @@ def process_document(
     raise HTTPException(status_code=error_status, detail=error_detail)
 
 
+@router.get(
+    "/{application_id}/documents/{document_id}/processing-result",
+    response_model=DocumentProcessingOut,
+)
+def get_document_processing_result(
+    application_id: int,
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _get_authorized_application(application_id, db, current_user)
+    document = db.query(Document).filter(
+        Document.id == document_id,
+        Document.application_id == application_id,
+    ).first()
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not document.processing_result:
+        raise HTTPException(status_code=404, detail="No persisted processing result is available")
+    return DocumentProcessingOut(
+        document_id=document.id,
+        processed_at=document.processed_at,
+        **document.processing_result,
+    )
+
+
 @router.post(
     "/{application_id}/documents/{document_id}/validate",
     response_model=DocumentValidationPreviewOut,
@@ -646,20 +672,9 @@ def validate_application_all(
     results = []
     findings_to_create = []
     docs_by_type = {doc.doc_type: doc for doc in documents}
-    # Application scope mapping
-    # In a real system, this would be derived from Application.app_type.
-    # For the demonstration, we map specific app_types to categories.
-    app_type_to_category = {
-        "Standard Regulatory": "Standard",
-        "Technical Institution": "Technical",
-        "Medical College": "Medical",
-    }
-
-    category = app_type_to_category.get(application.app_type)
-    if not category:
-        application_scope = None
-    else:
-        application_scope = {"institution_category": category}
+    # app_type is user-entered metadata, not verified institution or process
+    # evidence. Applicability stays unknown until those facts are reviewed.
+    application_scope = None
 
     for rule in rules_registry:
         eligibility = evaluate_preview_eligibility(rule, application_scope)
@@ -711,10 +726,12 @@ def validate_application_all(
             "Pass": "Compliant",
             "Fail": "Non-Compliant",
             "Needs review": "Partial",
-            "Not evaluated": "Not-Applicable"
+            "Not evaluated": "Not evaluated",
+            "Not-Applicable": "Not-Applicable",
         }
 
-        final_status = status_map.get(eval_result["status"], "Non-Compliant")
+        # Never turn missing scope/evidence into a pass, failure, or non-applicability.
+        final_status = status_map.get(eval_result["status"], "Not evaluated")
 
         res = {
             "rule_id": rule["rule_id"],
@@ -1052,10 +1069,15 @@ def validate_application_checklist(
                     explanation = "A processed document is attached and the configured required fields were extracted; values remain unverified."
         if check_status != "received":
             description = f"Synthetic checklist requirement '{doc_type}' is {check_status}. {explanation}"
+            finding_type = (
+                "Checklist expiry review"
+                if check_status in {"expired_document", "expiry_unverified"}
+                else "Checklist completeness"
+            )
             exists = db.query(Finding.id).filter(
                 Finding.application_id == application.id,
                 Finding.document_id == (linked_document.id if linked_document else None),
-                Finding.finding_type == "Checklist completeness",
+                Finding.finding_type == finding_type,
                 Finding.description == description,
                 Finding.status == "open",
             ).first()
@@ -1063,7 +1085,7 @@ def validate_application_checklist(
                 db.add(Finding(
                     application_id=application.id,
                     document_id=linked_document.id if linked_document else None,
-                    finding_type=("Checklist expiry review" if check_status in {"expired_document", "expiry_unverified"} else "Checklist completeness"),
+                    finding_type=finding_type,
                     severity="Medium" if check_status in {"processing_pending", "processing_failed", "expired_document", "expiry_unverified"} else "High",
                     description=description,
                     status="open",

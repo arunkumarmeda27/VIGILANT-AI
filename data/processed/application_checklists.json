@@ -9,6 +9,24 @@
         "expiry_field": "expiry_date"
       }
     },
+    "Extension of Approval": {
+      "fire_safety_certificate": {
+        "required_fields": ["institution_name", "certificate_number", "expiry_date"],
+        "expiry_field": "expiry_date"
+      }
+    },
+    "Extension of Approval (EoA)": {
+      "fire_safety_certificate": {
+        "required_fields": ["institution_name", "certificate_number", "expiry_date"],
+        "expiry_field": "expiry_date"
+      }
+    },
+    "EoA": {
+      "fire_safety_certificate": {
+        "required_fields": ["institution_name", "certificate_number", "expiry_date"],
+        "expiry_field": "expiry_date"
+      }
+    },
     "Technical Institution": {
       "fire_safety_certificate": {
         "required_fields": ["institution_name", "certificate_number", "expiry_date"],

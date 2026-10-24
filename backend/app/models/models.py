@@ -42,6 +42,7 @@ class User(Base, TimestampMixin):
     institution: Mapped[Optional["Institution"]] = relationship("Institution", back_populates="users")
     comments: Mapped[List["ReviewComment"]] = relationship("ReviewComment", back_populates="author")
     assessments: Mapped[List["ComplianceAssessment"]] = relationship("ComplianceAssessment", back_populates="reviewer")
+    assessment_reviews: Mapped[List["ComplianceAssessmentReview"]] = relationship("ComplianceAssessmentReview", back_populates="reviewer")
     finding_reviews: Mapped[List["FindingReview"]] = relationship("FindingReview", back_populates="reviewer")
 
 class Application(Base, TimestampMixin):
@@ -151,6 +152,24 @@ class ComplianceAssessment(Base):
     application: Mapped["Application"] = relationship("Application", back_populates="assessments")
     rule: Mapped["ComplianceRule"] = relationship("ComplianceRule", back_populates="assessments")
     reviewer: Mapped[Optional["User"]] = relationship("User", back_populates="assessments")
+    reviews: Mapped[List["ComplianceAssessmentReview"]] = relationship(
+        "ComplianceAssessmentReview", back_populates="assessment", cascade="all, delete-orphan"
+    )
+
+
+class ComplianceAssessmentReview(Base):
+    """Append-only human review decisions; they do not change automated results."""
+    __tablename__ = "compliance_assessment_reviews"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    assessment_id: Mapped[int] = mapped_column(ForeignKey("compliance_assessments.id"), index=True)
+    reviewer_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    outcome: Mapped[str] = mapped_column(String(50))
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    assessment: Mapped["ComplianceAssessment"] = relationship("ComplianceAssessment", back_populates="reviews")
+    reviewer: Mapped["User"] = relationship("User", back_populates="assessment_reviews")
 
 class AuditEvent(Base):
     __tablename__ = "audit_events"

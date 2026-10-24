@@ -310,6 +310,27 @@ def test_synthetic_checklist_distinguishes_missing_pending_and_incomplete_fields
     assert set(incomplete.json()["items"][0]["missing_fields"]) == {"certificate_number", "expiry_date"}
 
 
+def test_eoa_application_has_explicit_synthetic_checklist_without_scope_claim(test_database):
+    institution_id = create_institution(test_database, "EoA checklist institution")
+    create_user(test_database, "eoa-checklist@example.com", UserRole.INSTITUTION_USER, institution_id)
+    application_id = create_application(test_database, "EOA-CHECKLIST-1", institution_id)
+    with test_database() as db:
+        application = db.query(Application).filter_by(id=application_id).one()
+        application.app_type = "Extension of Approval (EoA)"
+        db.commit()
+
+    response = client.post(
+        f"/api/applications/{application_id}/validate-checklist",
+        headers=login("eoa-checklist@example.com"),
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["category"] == "Extension of Approval (EoA)"
+    assert result["source"] == "synthetic_demo"
+    assert [item["document_type"] for item in result["items"]] == ["fire_safety_certificate"]
+    assert result["items"][0]["status"] == "missing_document"
+
+
 def test_reviewer_decisions_are_append_only_audited_and_assignment_protected(test_database):
     assigned_id = create_user(test_database, "finding-reviewer@example.com", UserRole.REVIEWER)
     other_id = create_user(test_database, "other-reviewer@example.com", UserRole.REVIEWER)
@@ -618,6 +639,13 @@ def test_process_text_pdf_extracts_fields_with_page_evidence(test_database):
     assert audit_history.status_code == 200
     actions = {event["action"] for event in audit_history.json()["items"]}
     assert {"document.uploaded", "document.processed"}.issubset(actions)
+
+    persisted = client.get(
+        f"/api/applications/{application_id}/documents/{uploaded.json()['id']}/processing-result",
+        headers=login("processor@example.com"),
+    )
+    assert persisted.status_code == 200
+    assert persisted.json()["fields"] == result["fields"]
 
 
 def test_document_classification_uses_content_and_keeps_uncertain_type_unclassified(test_database):
