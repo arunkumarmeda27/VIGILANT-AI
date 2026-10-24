@@ -1,8 +1,9 @@
 import React, { createContext, useContext, useMemo, useRef, useState, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, ArrowRight, ClipboardCheck, Eye, EyeOff, FileCheck2, FileText, LayoutDashboard, ListChecks, Menu, Search, ShieldCheck, UserRound, XCircle, Lock, Mail, Loader2 } from 'lucide-react';
+import { AlertTriangle, ArrowRight, ClipboardCheck, Database, Eye, EyeOff, FileCheck2, FileText, LayoutDashboard, ListChecks, Menu, Search, ShieldCheck, UserRound, XCircle, Lock, Mail, Loader2 } from 'lucide-react';
 import './styles.css';
+import './command.css';
 
 // --- Types ---
 type DS = 'Not Submitted' | 'Received' | 'Validation Pending' | 'Verified' | 'Mismatch Detected' | 'Source Unavailable' | 'Manual Review Required';
@@ -342,7 +343,7 @@ function Shell({ title, children, liveData = false }: { title: string; children:
         <header className="topbar">
           <button className="menu" aria-label="Open navigation" aria-expanded={open} aria-controls="workspace-navigation" onClick={() => setOpen(!open)}><Menu /></button>
           <div className="topbar-title"><p className="crumb">VIGILANT AI <span>/</span> {title}</p><h1>{title}</h1></div>
-          <div className="topbar-context"><span className="context-indicator" /><span>{liveData ? 'Persisted workspace' : 'Interactive demo'}</span></div>
+          <div className="topbar-context">{liveData ? <Database size={15} aria-hidden="true" /> : <ShieldCheck size={15} aria-hidden="true" />}<span>{liveData ? 'Persisted data' : 'Interactive demo'}</span></div>
         </header>
         <main className="app-content">
           {!liveData && <p className="demo-notice">Frontend demonstration · All extraction, verification, anomaly and compliance outcomes are deterministic simulated data. Human review is required.</p>}
@@ -363,6 +364,9 @@ function Dashboard() {
   const { token, logout } = useAuth();
   const [applications, setApplications] = useState<PersistedApplication[]>([]);
   const [documents, setDocuments] = useState<PersistedDocument[]>([]);
+  const [assessments, setAssessments] = useState<ComplianceAssessment[]>([]);
+  const [assessmentTotal, setAssessmentTotal] = useState(0);
+  const [auditEvents, setAuditEvents] = useState<AuditEventItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -374,16 +378,22 @@ function Dashboard() {
       setLoading(false);
       return () => { cancelled = true; };
     }
-    requestApi<PersistedApplication[]>('/api/applications/', token)
-      .then(async items => {
-        const lists = await Promise.all(items.map(application =>
-          requestApi<PersistedDocument[]>(`/api/applications/${application.id}/documents`, token),
-        ));
-        if (!cancelled) {
-          setApplications(items);
-          setDocuments(lists.flat());
-        }
-      })
+    Promise.all([
+      requestApi<PersistedApplication[]>('/api/applications/', token),
+      requestApi<ComplianceAssessmentPage>('/api/compliance-assessments/?limit=8&offset=0', token),
+      requestApi<AuditEventPage>('/api/audit-events/?limit=6&offset=0', token),
+    ]).then(async ([items, assessmentPage, auditPage]) => {
+      const documentLists = await Promise.all(items.map(application =>
+        requestApi<PersistedDocument[]>(`/api/applications/${application.id}/documents`, token),
+      ));
+      if (!cancelled) {
+        setApplications(items);
+        setDocuments(documentLists.flat());
+        setAssessments(assessmentPage.items);
+        setAssessmentTotal(assessmentPage.total);
+        setAuditEvents(auditPage.items);
+      }
+    })
       .catch(reason => {
         if (cancelled) return;
         if (reason instanceof ApiRequestError && reason.status === 401) {
@@ -401,9 +411,11 @@ function Dashboard() {
     ['Accessible applications', applications.length, '/applications'],
     ['Submitted', applications.filter(item => item.status === 'submitted').length, '/applications?status=submitted'],
     ['Documents uploaded', documents.length, '/verification'],
+    ['Documents processed', documents.filter(item => item.processing_status === 'completed').length, '/verification'],
+    ['Accessible assessments', assessmentTotal, '/review-queue'],
     ['Processing failures', documents.filter(item => item.processing_status === 'failed').length, '/verification'],
-    ['Processing pending', documents.filter(item => item.processing_status === 'pending' || item.processing_status === 'processing').length, '/verification'],
-    ['Needs human review', documents.filter(item => item.processing_status === 'ocr_unavailable').length, '/verification'],
+    ['Awaiting processing', documents.filter(item => item.processing_status === 'pending' || item.processing_status === 'processing').length, '/verification'],
+    ['OCR unavailable', documents.filter(item => item.processing_status === 'ocr_unavailable').length, '/verification'],
   ];
   const recent = [...applications].sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)).slice(0, 8);
 
@@ -428,6 +440,26 @@ function Dashboard() {
             <Heading title="Document processing status" text="Processing state is server-reported; OCR-unavailable documents need manual review or a supported OCR setup." />
             {documents.length ? <div className="live-document-list">{documents.filter(item => item.processing_status !== 'completed').map(document => <article className="live-document-card" key={document.id}><b>{document.original_filename}</b><p>Application {document.application_id} · Document {document.id}</p><Tag>{document.processing_status}</Tag></article>)}</div> : <p className="validation-meta">No uploaded documents are available.</p>}
           </section>
+          <div className="overview-activity-grid">
+            <section className="content-section">
+              <Heading title="Recent assessments" text="Persisted records available to your account. Automated results remain separate from human decisions." />
+              {assessments.length ? <div className="overview-record-list">{assessments.slice(0, 6).map(item => <article key={item.id}>
+                <div><b>{item.rule_code} · {item.application_reference}</b><Tag>{item.status}</Tag></div>
+                <p>{item.entity_name} · {item.rule_title}</p>
+                <small>{new Date(item.assessed_at).toLocaleString()} · Reviewer: {item.reviewer_name || 'Unassigned'}</small>
+                <Link className="table-link" to={`/compliance-assessments/${item.id}`}>Open assessment <ArrowRight size={13} aria-hidden="true" /></Link>
+              </article>)}</div> : <p className="validation-meta">No persisted assessments are available to this account.</p>}
+              <Link className="button secondary overview-link" to="/review-queue">Open review queue</Link>
+            </section>
+            <section className="content-section">
+              <Heading title="Recent audit activity" text="Authorized events returned by the backend. Event visibility is scoped by your account." />
+              {auditEvents.length ? <div className="overview-audit-list">{auditEvents.map(event => <article key={event.id}>
+                <span className="audit-marker" aria-hidden="true" />
+                <div><b>{event.action.replaceAll('.', ' · ').replaceAll('_', ' ')}</b><p>{event.entity_type} {event.entity_id} · {event.actor_name || 'Actor unavailable'}</p><time dateTime={event.timestamp}>{new Date(event.timestamp).toLocaleString()}</time></div>
+              </article>)}</div> : <p className="validation-meta">No audit activity is available to this account.</p>}
+              <Link className="button secondary overview-link" to="/audit-trail">View audit history</Link>
+            </section>
+          </div>
         </>
       )}
     </Shell>
@@ -440,6 +472,11 @@ function AIEvidenceSearch() {
   const [answer, setAnswer] = useState<AIAnswer | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const examples = [
+    'What fire safety evidence is described in the available source?',
+    'Which page discusses the required supporting documents?',
+    'What does the source say about institutional infrastructure evidence?',
+  ];
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -499,8 +536,12 @@ function AIEvidenceSearch() {
       <section className="content-section ai-search-panel">
         <Heading
           title="Search regulatory source evidence"
-          text="Ask a question to retrieve passages from the available AICTE handbook source."
+          text="Ask a question to retrieve passages from the available handbook source."
         />
+        <div className="ai-examples" aria-label="Example questions">
+          <span>Try an example</span>
+          {examples.map(example => <button className="ai-example" type="button" key={example} disabled={isLoading} onClick={() => { setQuestion(example); setAnswer(null); setError(null); }}>{example}</button>)}
+        </div>
         <form className="ai-search-form" onSubmit={handleSubmit}>
           <label htmlFor="ai-evidence-question">Question</label>
           <textarea
@@ -522,6 +563,8 @@ function AIEvidenceSearch() {
           </div>
         </form>
         {error && <div className="ai-search-error" role="alert"><AlertTriangle size={18} aria-hidden="true" />{error}</div>}
+        {isLoading && <p className="ai-search-loading" role="status"><Loader2 size={17} className="spin" aria-hidden="true" /> Searching the available source…</p>}
+        {!answer && !error && !isLoading && <p className="ai-search-empty">Choose an example or enter a question. Returned passages and citations will appear here.</p>}
       </section>
 
       {answer && (
@@ -1102,7 +1145,31 @@ function PersistedApplicationDetail() {
   );
 }
 
-function Detail() { const { id = '' } = useParams(); const { apps } = useStore(); const app = apps.find(a => a.id === id); const [tab, setTab] = useState('Overview'); if (!app) return <Navigate to="/applications" replace />; const tabs = ['Overview', 'Documents', 'Findings', 'Compliance', 'Verification', 'Audit History']; return <Shell title="Application details"><section className="detail-head"><div><p className="eyebrow">{app.category}</p><h2>{app.id}</h2><p>{app.institution} · Submitted {app.submitted}</p></div><Tag>{app.status}</Tag></section><div className="tabs" role="tablist">{tabs.map(t => <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{t}</button>)}</div>{tab === 'Overview' && <Overview app={app} />} {tab === 'Documents' && <Documents app={app} />} {tab === 'Findings' && <Findings app={app} />} {tab === 'Compliance' && <Compliance app={app} />} {tab === 'Verification' && <Verification app={app} />} {tab === 'Audit History' && <Audit app={app} />}</Shell> }
+function Detail() {
+  const { id = '' } = useParams();
+  const { apps } = useStore();
+  const app = apps.find(a => a.id === id);
+  const [tab, setTab] = useState('Overview');
+  if (!app) return <Navigate to="/applications" replace />;
+  const tabs = ['Overview', 'Documents', 'Findings', 'Compliance', 'Verification', 'Audit History'];
+  const panels: Record<string, React.ReactNode> = {
+    Overview: <Overview app={app} />, Documents: <Documents app={app} />, Findings: <Findings app={app} />,
+    Compliance: <Compliance app={app} />, Verification: <Verification app={app} />, 'Audit History': <Audit app={app} />,
+  };
+  const selectTab = (index: number) => setTab(tabs[(index + tabs.length) % tabs.length]);
+  return <Shell title="Application details">
+    <section className="detail-head"><div><p className="eyebrow">{app.category}</p><h2>{app.id}</h2><p>{app.institution} · Submitted {app.submitted}</p></div><Tag>{app.status}</Tag></section>
+    <div className="tabs" role="tablist" aria-label="Application details">
+      {tabs.map((t, index) => <button key={t} id={`application-tab-${index}`} type="button" role="tab" aria-selected={tab === t} aria-controls="application-tabpanel" tabIndex={tab === t ? 0 : -1} className={tab === t ? 'active' : ''} onClick={() => setTab(t)} onKeyDown={event => {
+        if (event.key === 'ArrowRight') { event.preventDefault(); selectTab(index + 1); document.getElementById(`application-tab-${(index + 1) % tabs.length}`)?.focus(); }
+        else if (event.key === 'ArrowLeft') { event.preventDefault(); selectTab(index - 1); document.getElementById(`application-tab-${(index + tabs.length - 1) % tabs.length}`)?.focus(); }
+        else if (event.key === 'Home') { event.preventDefault(); selectTab(0); document.getElementById('application-tab-0')?.focus(); }
+        else if (event.key === 'End') { event.preventDefault(); selectTab(tabs.length - 1); document.getElementById(`application-tab-${tabs.length - 1}`)?.focus(); }
+      }}>{t}</button>)}
+    </div>
+    <div id="application-tabpanel" role="tabpanel" aria-labelledby={`application-tab-${tabs.indexOf(tab)}`} tabIndex={0}>{panels[tab]}</div>
+  </Shell>;
+}
 
 function Overview({ app }: { app: App }) { return <div className="detail-grid"><section className="content-section"><Heading title="Scrutiny summary" text="No automatic approval or rejection is generated." /><dl><dt>Current reviewer</dt><dd>{app.reviewer}</dd><dt>Documents</dt><dd>{app.documents.length} configured checklist items</dd><dt>Next required action</dt><dd>{app.nextAction}</dd></dl></section><section className="finding-card"><Heading title="Current review signal" text={app.findings[0]?.title || 'No unresolved findings.'} /><p>{app.findings[0]?.explanation || 'Configured comparisons currently contain a matching-value example.'}</p></section></div> }
 
@@ -1296,10 +1363,10 @@ function GlobalAudit() {
                 </article>
               ))}
             </div>
-            <div className="live-page-actions audit-pagination">
-              <button className="button secondary" disabled={loading || offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}>Previous</button>
-              <span>Showing {offset + 1}–{Math.min(offset + page.items.length, page.total)} of {page.total}</span>
-              <button className="button secondary" disabled={loading || offset + pageSize >= page.total} onClick={() => setOffset(offset + pageSize)}>Next</button>
+            <div className="live-page-actions audit-pagination" role="group" aria-label="Audit history pagination">
+              <button className="button secondary" aria-label="Previous audit history page" disabled={loading || offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}>Previous</button>
+              <span aria-live="polite">Showing {offset + 1}–{Math.min(offset + page.items.length, page.total)} of {page.total}</span>
+              <button className="button secondary" aria-label="Next audit history page" disabled={loading || offset + pageSize >= page.total} onClick={() => setOffset(offset + pageSize)}>Next</button>
             </div>
           </>
         ) : <p className="validation-meta">No audit events are available to this account.</p>}
@@ -1350,10 +1417,10 @@ function AssessmentWorkspace({ title }: { title: string }) {
                 <td><Link className="button secondary" to={`/compliance-assessments/${item.id}`}>Open review</Link></td>
               </tr>)}</tbody>
             </table></div>
-            <div className="live-page-actions audit-pagination">
-              <button className="button secondary" disabled={loading || offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}>Previous</button>
-              <span>Showing {offset + 1}–{Math.min(offset + page.items.length, page.total)} of {page.total}</span>
-              <button className="button secondary" disabled={loading || offset + pageSize >= page.total} onClick={() => setOffset(offset + pageSize)}>Next</button>
+            <div className="live-page-actions audit-pagination" role="group" aria-label="Assessment queue pagination">
+              <button className="button secondary" aria-label="Previous assessment page" disabled={loading || offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}>Previous</button>
+              <span aria-live="polite">Showing {offset + 1}–{Math.min(offset + page.items.length, page.total)} of {page.total}</span>
+              <button className="button secondary" aria-label="Next assessment page" disabled={loading || offset + pageSize >= page.total} onClick={() => setOffset(offset + pageSize)}>Next</button>
             </div>
           </>
         ) : <p className="validation-meta">No persisted assessments are available to this account. This is not a finding of compliance or non-compliance.</p>}
@@ -2077,7 +2144,7 @@ function Report() { const { id = '' } = useParams(); const { apps } = useStore()
 
 function ReportRouteView() { const { id = '' } = useParams(); return /^\d+$/.test(id) ? <PersistedReport /> : <Report /> }
 
-function Admin() { const { user } = useAuth(); return <Shell title="Administration" liveData><section className="content-section"><Heading title="Signed-in account" text="Access is enforced by the backend for each request. Changing the displayed role cannot grant permissions." /><dl className="validation-rule-meta"><div><dt>Account</dt><dd>{user?.full_name} · {user?.email}</dd></div><div><dt>Server role</dt><dd>{user?.role}</dd></div><div><dt>Institution</dt><dd>{user?.role === 'ADMIN' ? 'Platform-wide administrative access' : 'Assigned institution scope'}</dd></div></dl><div className="live-page-actions"><Link className="button secondary" to="/review-queue">Open persisted assessment review queue</Link><Link className="button secondary" to="/audit-trail">Open authorized audit history</Link></div><p className="validation-disclaimer">This prototype does not provide a live regulatory-rule configuration interface. Candidate rules remain subject to source, currentness, and applicability review.</p></section></Shell> }
+function Admin() { const { user } = useAuth(); return <Shell title="Administration" liveData><section className="content-section"><Heading title="Signed-in account" text="Access is enforced by the backend for each request. Changing the displayed role cannot grant permissions." /><dl className="validation-rule-meta"><div><dt>Account</dt><dd>{user?.full_name} · {user?.email}</dd></div><div><dt>Server role</dt><dd>{user?.role}</dd></div><div><dt>Institution</dt><dd>{user?.role === 'ADMIN' ? 'Platform-wide administrative access' : 'Institution-scoped access; the signed-in account API does not provide an institution name.'}</dd></div></dl><div className="live-page-actions"><Link className="button secondary" to="/review-queue">Open persisted assessment review queue</Link><Link className="button secondary" to="/audit-trail">Open authorized audit history</Link></div><p className="validation-disclaimer">This prototype does not provide a live regulatory-rule configuration interface. Candidate rules remain subject to source, currentness, and applicability review.</p></section></Shell> }
 
 function Login() {
   const nav = useNavigate();
