@@ -20,6 +20,7 @@ def test_metadata_contains_tables():
     tables = Base.metadata.tables.keys()
     expected_tables = [
         "users", "applications", "documents", "findings",
+        "finding_reviews",
         "review_comments", "compliance_rules", "compliance_assessments", "audit_events"
     ]
     for table in expected_tables:

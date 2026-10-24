@@ -25,11 +25,11 @@ def override_get_db():
     finally:
         db.close()
 
-app.dependency_overrides[real_get_db] = override_get_db
 client = TestClient(app)
 
 @pytest.fixture(scope="function", autouse=True)
-def setup_db():
+def setup_db(monkeypatch):
+    monkeypatch.setitem(app.dependency_overrides, real_get_db, override_get_db)
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     yield

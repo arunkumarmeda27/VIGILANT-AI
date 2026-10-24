@@ -2,6 +2,10 @@
 
 VIGILANT AI is a local SIH26261 prototype for authenticated institutional application intake, PDF document processing, source-linked AICTE handbook search, and a conservative Fire Safety validation preview. It is not an approval system, an issuer-authentication service, or a determination of institutional compliance.
 
+## Problem and approach
+
+SIH26261 calls for support reviewing institutional application evidence and regulatory requirements. This prototype brings application records, uploaded PDF extraction, persisted reviewer assessments, audit events, and cross-document comparisons into one role-scoped workflow. Extracted values and registry outcomes are review aids; synthetic, unapproved, or uncertain rules are not presented as official current requirements.
+
 ## Current implementation
 
 | Feature | Status |
@@ -14,6 +18,8 @@ VIGILANT AI is a local SIH26261 prototype for authenticated institutional applic
 | AICTE handbook Evidence Search | Authenticated retrieval API and citation display implemented; retrieval data/files must be present |
 | Real-data Application and Document Verification pages | Use authenticated backend endpoints |
 | Compliance assessments and review queue | Authenticated, role-scoped persisted assessment API and frontend display; no assessment is created by these read-only pages |
+| Persisted findings | Authorized application findings API and application detail display |
+| Validation workflow | Application detail can run registry validation and cross-document comparison, then show persisted assessments and run-by-run comparison history |
 | Validation reports | Numeric application IDs show persisted application, document, and assessment records; illustrative nonnumeric routes remain explicitly demo-only |
 | Audit history | Authenticated, role-scoped, paginated read API and UI; metadata is allowlisted to avoid exposing secrets or document contents |
 | Integrity assistance | Same-application SHA-256 duplicate check and limited PDF structure/metadata heuristics; results are not authenticity findings |
@@ -46,7 +52,7 @@ The frontend uses `VITE_API_URL` when supplied; otherwise it connects to `http:/
 
 ## Database setup
 
-From `C:\Users\ASUS-TUF\VIGILANT-AI\backend`, after confirming the configured database target is the intended local development database:
+From `C:\Users\ASUS-TUF\OneDrive\ドキュメント\Playground\VIGILANT-AI\backend`, after confirming the configured database target is the intended local development database:
 
 ```powershell
 .\venv\Scripts\python.exe -m alembic current
@@ -55,19 +61,21 @@ From `C:\Users\ASUS-TUF\VIGILANT-AI\backend`, after confirming the configured da
 
 Do not run migrations against production or an unverified database. These commands apply schema migrations; they do not seed an application. Application creation should use the authenticated API. Test suites use isolated SQLite test databases and must not be pointed at the development PostgreSQL database.
 
+Pending migrations include the consistency-run migration, which backfills existing results into one legacy run per application, and the finding-review migration, which adds append-only reviewer decisions. Both preserve existing findings/results and have only been tested against isolated SQLite databases. Neither has been applied to an application database. The historical backfill cannot reconstruct validation attempts that older code had already overwritten.
+
 ## Start locally
 
 Terminal 1, backend:
 
 ```powershell
-Set-Location C:\Users\ASUS-TUF\VIGILANT-AI\backend
+Set-Location 'C:\Users\ASUS-TUF\OneDrive\ドキュメント\Playground\VIGILANT-AI\backend'
 .\venv\Scripts\python.exe -m uvicorn app.main:app --reload
 ```
 
 Terminal 2, frontend:
 
 ```powershell
-Set-Location C:\Users\ASUS-TUF\VIGILANT-AI
+Set-Location 'C:\Users\ASUS-TUF\OneDrive\ドキュメント\Playground\VIGILANT-AI'
 npm run dev
 ```
 
@@ -88,19 +96,27 @@ Application routes:
 - `GET /api/institutions/` and `POST /api/institutions/`: administrator-only institution selection and creation.
 - `GET /api/compliance-assessments/`: paginated assessments filtered by role and access scope.
 - `GET /api/audit-events/`: paginated audit events filtered by role and access scope.
+- `GET /api/applications/{application_id}/findings`: persisted findings for an authorized application.
+- `POST /api/applications/{application_id}/validate-checklist`: run the configured synthetic category checklist and persist advisory completeness findings.
+- `POST /api/applications/{application_id}/findings/{finding_id}/reviews`: append an outcome and reviewer note (assigned reviewers only).
+- `GET /api/applications/{application_id}/consistency-runs`: persisted run history and comparison rows for an authorized application.
 
 Institution users must already be assigned to an institution; ownership is derived from their account. Administrators can select an existing institution when creating an application and may create institutions through the admin-only endpoint. Creating an institution does not assign users to it. Reviewer application access depends on an assessment assignment. References are unique.
 
 The live Applications page lists backend records and offers creation to administrators and institution users. A new application page displays its persisted reference, ID, timestamps, status, and document count.
+
+On a persisted application detail page, authorized users can run the category checklist and registry-based validation and inspect persisted findings/assessments; the checklist is explicitly synthetic and the registry page labels source/currentness limits. Assigned reviewers can append a finding outcome and note, preserving all earlier reviews and the automated finding. With at least two processed documents, users can run cross-document validation. The server creates a distinct consistency run, stores its comparisons, and exposes authorized history at `GET /api/applications/{application_id}/consistency-runs`. Prior runs remain available and result rows include the associated document filenames. Validation and review actions are recorded in audit history.
 
 ## Document demonstration
 
 1. Sign in as an administrator (admin-created applications are visible to administrators), or as an institution user assigned to an institution.
 2. Open **Applications**, create a record using synthetic organization details, or choose an existing authorized record.
 3. Open its document workspace and upload a synthetic PDF. The initial document type choices are Fire Safety Certificate, Faculty Qualification Certificate, Accreditation Certificate, and Other Supporting Document. The API currently stores document type as a string.
-4. Select **Process document**. Native PDF text is preferred; OCR is attempted for text-poor pages when Tesseract is available.
-5. Review returned fields, page and evidence excerpts, extraction method, warnings, and processing status. These values are unverified; missing fields do not establish non-compliance.
-6. **Validate document** is enabled only when the backend reports processing status `completed`. The preview displays candidate rules and review state. Unreviewed, disabled rules remain `unknown` or `not_assessed`; the preview does not determine authenticity, fraud, expiry, or compliance.
+4. Upload the same file again under another filename to demonstrate the same-application SHA-256 duplicate finding. It is an advisory indicator only and does not mean fraud.
+5. Select **Process document**. Native PDF text is preferred; OCR is attempted for text-poor pages when Tesseract is available.
+6. Review returned fields, page and evidence excerpts, extraction method, warnings, and processing status. These values are unverified; missing fields do not establish non-compliance.
+7. On the application detail page, run **Run document checklist**. It distinguishes missing items, incomplete extraction, and processing states. Checklist requirements are synthetic demo configuration, not official AICTE requirements.
+8. **Validate document** is enabled only when the backend reports processing status `completed`. The preview displays candidate rules and review state. Unreviewed, disabled rules remain `unknown` or `not_assessed`; the preview does not determine authenticity, fraud, expiry, or compliance.
 
 Document APIs:
 
@@ -109,6 +125,7 @@ Document APIs:
 - `GET /api/applications/{application_id}/documents/{document_id}/download`
 - `POST /api/applications/{application_id}/documents/{document_id}/process`
 - `POST /api/applications/{application_id}/documents/{document_id}/validate`
+- `POST /api/applications/{application_id}/documents/{document_id}/integrity-check`
 
 Use synthetic records only. The extraction service recognizes a limited set of explicitly labeled institution, certificate number, issue date, and expiry date fields. It does not establish document type or verify a certificate with its issuer. No certificate validity period is inferred.
 
@@ -157,8 +174,8 @@ No browser-based end-to-end test is currently configured. An API or unit test pa
 
 - The static regulatory candidate mappings/currentness are not all approved; do not enable them to make a demo produce pass/fail results.
 - The existing application type and status fields are free-form strings; this prototype does not define a complete application workflow or formal status transition policy.
-- Admin-created records are not linked to an institution because there is no institution selection API/form.
+- Administrator-created records require an institution selected through the institution picker on the create-application page.
 - Audit history is paginated and scoped; it is not a tamper-proof or complete compliance ledger. It exposes selected creation, update, upload, and processing events, not full document contents.
-- Integrity checks are limited heuristics and same-application duplicate hashes. No issuer authentication, fraud detection, or calibrated anomaly analysis is implemented.
+- Integrity checks are limited heuristics and same-application duplicate hashes. The checklist is synthetic and category mappings are not official AICTE requirements. No issuer authentication, fraud detection, or calibrated anomaly analysis is implemented.
 - Protect `.env`, database backups, document storage, logs, and JWT secrets. Configure HTTPS, least privilege, backups, monitoring, rate limiting, retention controls, and a reviewed production secret/database setup before deployment.
 - Human review remains necessary. Extracted text, OCR confidence, successful upload, and field matching are not proof of authenticity or institutional compliance.

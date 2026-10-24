@@ -22,6 +22,8 @@ from app.models.models import (
     ComplianceAssessment,
     ComplianceRule,
     Document,
+    Finding,
+    FindingReview,
     Institution,
     User,
 )
@@ -79,10 +81,9 @@ def test_database(tmp_path, monkeypatch):
             db.close()
 
     monkeypatch.setattr(settings, "DOCUMENT_STORAGE_DIR", tmp_path / "document-storage")
-    app.dependency_overrides[real_get_db] = override_get_db
+    monkeypatch.setitem(app.dependency_overrides, real_get_db, override_get_db)
     Base.metadata.create_all(bind=engine)
     yield testing_session_local
-    app.dependency_overrides.pop(real_get_db, None)
     Base.metadata.drop_all(bind=engine)
     engine.dispose()
 
@@ -244,6 +245,97 @@ def test_integrity_preview_detects_identical_files_only_within_application(test_
     assert "does not establish" in result["limitations"][1]
 
 
+def test_duplicate_upload_persists_advisory_finding_and_audit_without_cross_application_match(test_database):
+    institution_id = create_institution(test_database, "Duplicate institution")
+    create_user(test_database, "duplicate@example.com", UserRole.INSTITUTION_USER, institution_id)
+    first_application = create_application(test_database, "DUPLICATE-A", institution_id)
+    second_application = create_application(test_database, "DUPLICATE-B", institution_id)
+    headers = login("duplicate@example.com")
+    first = upload(first_application, headers, filename="original.pdf", content=PDF_CONTENT)
+    same = upload(first_application, headers, filename="renamed.pdf", content=PDF_CONTENT)
+    different = upload(first_application, headers, filename="different.pdf", content=make_text_pdf("Different PDF bytes"))
+    across_application = upload(second_application, headers, filename="other-app.pdf", content=PDF_CONTENT)
+    assert all(response.status_code == 201 for response in [first, same, different, across_application])
+
+    with test_database() as db:
+        duplicate_findings = db.query(Finding).filter_by(finding_type="Duplicate document").all()
+        assert len(duplicate_findings) == 1
+        assert duplicate_findings[0].application_id == first_application
+        assert duplicate_findings[0].document_id == same.json()["id"]
+        assert "not a fraud finding" in duplicate_findings[0].description
+        event = db.query(AuditEvent).filter_by(action="document.duplicate_detected").one()
+        assert json.loads(event.audit_metadata)["matched_document_id"] == first.json()["id"]
+        assert db.query(Finding).filter(Finding.document_id == different.json()["id"]).count() == 0
+        assert db.query(Finding).filter(Finding.application_id == second_application).count() == 0
+
+
+def test_synthetic_checklist_distinguishes_missing_pending_and_incomplete_fields(test_database):
+    institution_id = create_institution(test_database, "Checklist institution")
+    create_user(test_database, "checklist@example.com", UserRole.INSTITUTION_USER, institution_id)
+    application_id = create_application(test_database, "CHECKLIST-1", institution_id)
+    with test_database() as db:
+        app_obj = db.query(Application).filter_by(id=application_id).one()
+        app_obj.app_type = "Technical Institution"
+        db.add(Document(application_id=application_id, doc_type="fire_safety_certificate", original_filename="pending.pdf", storage_key="pending.pdf", processing_status="pending"))
+        db.commit()
+
+    response = client.post(f"/api/applications/{application_id}/validate-checklist", headers=login("checklist@example.com"))
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["source"] == "synthetic_demo"
+    assert data["items"][0]["status"] == "processing_pending"
+    with test_database() as db:
+        finding_descriptions = [finding.description for finding in db.query(Finding).filter_by(application_id=application_id).all()]
+        assert any("processing_pending" in description for description in finding_descriptions)
+        assert any("missing_document" in description for description in finding_descriptions)
+        assert db.query(AuditEvent).filter_by(action="application.checklist_validated").count() == 1
+
+    incomplete_app_id = create_application(test_database, "CHECKLIST-INCOMPLETE", institution_id)
+    with test_database() as db:
+        app_obj = db.query(Application).filter_by(id=incomplete_app_id).one()
+        app_obj.app_type = "Standard Regulatory"
+        db.add(Document(
+            application_id=incomplete_app_id,
+            doc_type="fire_safety_certificate",
+            original_filename="incomplete.pdf",
+            storage_key="incomplete.pdf",
+            processing_status="completed",
+            processing_result={"fields": {"institution_name": {"value": "Test Entity"}, "certificate_number": {"value": None}, "expiry_date": {"value": None}}},
+        ))
+        db.commit()
+    incomplete = client.post(f"/api/applications/{incomplete_app_id}/validate-checklist", headers=login("checklist@example.com"))
+    assert incomplete.status_code == 200
+    assert incomplete.json()["items"][0]["status"] == "incomplete_fields"
+    assert set(incomplete.json()["items"][0]["missing_fields"]) == {"certificate_number", "expiry_date"}
+
+
+def test_reviewer_decisions_are_append_only_audited_and_assignment_protected(test_database):
+    assigned_id = create_user(test_database, "finding-reviewer@example.com", UserRole.REVIEWER)
+    other_id = create_user(test_database, "other-reviewer@example.com", UserRole.REVIEWER)
+    app_id = create_application(test_database, "FINDING-REVIEW")
+    rule = ComplianceRule(rule_code="REVIEW-ASSIGN", title="Assignment", description="Assignment", category="test", is_active=True)
+    with test_database() as db:
+        db.add(rule); db.flush()
+        db.add(ComplianceAssessment(application_id=app_id, rule_id=rule.id, reviewer_id=assigned_id, status="pending", explanation=""))
+        finding = Finding(application_id=app_id, finding_type="Test", severity="Low", description="Advisory test finding", status="open")
+        db.add(finding); db.commit(); finding_id = finding.id
+    assigned = login("finding-reviewer@example.com")
+    unassigned = login("other-reviewer@example.com")
+
+    rejected = client.post(f"/api/applications/{app_id}/findings/{finding_id}/reviews", headers=unassigned, json={"outcome": "false_positive", "note": "No assignment"})
+    first = client.post(f"/api/applications/{app_id}/findings/{finding_id}/reviews", headers=assigned, json={"outcome": "needs_further_review", "note": "Inspect original"})
+    second = client.post(f"/api/applications/{app_id}/findings/{finding_id}/reviews", headers=assigned, json={"outcome": "confirmed_issue", "note": "Evidence confirmed"})
+    assert rejected.status_code == 403
+    assert first.status_code == second.status_code == 201
+    with test_database() as db:
+        assert db.query(FindingReview).filter_by(finding_id=finding_id).count() == 2
+        original = db.query(Finding).filter_by(id=finding_id).one()
+        assert original.status == "open"
+        assert db.query(AuditEvent).filter_by(action="finding.review_recorded", entity_id=str(finding_id)).count() == 2
+    listed = client.get(f"/api/applications/{app_id}/findings", headers=assigned)
+    assert [review["outcome"] for review in listed.json()[0]["reviews"]] == ["needs_further_review", "confirmed_issue"]
+
+
 def test_integrity_preview_reports_pdf_metadata_as_user_controlled(test_database):
     institution_id = create_institution(test_database, "Metadata institution")
     create_user(test_database, "metadata@example.com", UserRole.INSTITUTION_USER, institution_id)
@@ -265,7 +357,24 @@ def test_integrity_preview_reports_pdf_metadata_as_user_controlled(test_database
     assert result["pdf_structure_check"]["status"] == "readable"
     assert result["metadata_check"]["status"] == "present"
     assert "user-controlled" in result["metadata_check"]["explanation"]
-    assert result["authenticity_status"] == "not_assessed"
+
+
+def test_integrity_check_persists_audit_event(test_database):
+    institution_id = create_institution(test_database, "Integrity audit institution")
+    create_user(test_database, "integrity-audit@example.com", UserRole.INSTITUTION_USER, institution_id)
+    application_id = create_application(test_database, "INTEGRITY-AUDIT", institution_id)
+    headers = login("integrity-audit@example.com")
+    uploaded = upload(application_id, headers)
+    assert uploaded.status_code == 201
+    response = client.post(
+        f"/api/applications/{application_id}/documents/{uploaded.json()['id']}/integrity-check",
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["authenticity_status"] == "not_assessed"
+    with test_database() as db:
+        event = db.query(AuditEvent).filter_by(action="document.integrity_checked").one()
+        assert event.entity_id == str(uploaded.json()["id"])
 
 
 def test_integrity_preview_denies_unauthorized_application_and_document(test_database):

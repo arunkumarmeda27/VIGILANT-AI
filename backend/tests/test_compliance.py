@@ -21,7 +21,7 @@ client = TestClient(app)
 
 
 @pytest.fixture
-def test_database(tmp_path):
+def test_database(tmp_path, monkeypatch):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'compliance-tests.db'}",
         connect_args={"check_same_thread": False},
@@ -35,10 +35,9 @@ def test_database(tmp_path):
         finally:
             db.close()
 
-    app.dependency_overrides[real_get_db] = override_get_db
+    monkeypatch.setitem(app.dependency_overrides, real_get_db, override_get_db)
     Base.metadata.create_all(bind=engine)
     yield session_local
-    app.dependency_overrides.pop(real_get_db, None)
     Base.metadata.drop_all(bind=engine)
     engine.dispose()
 

@@ -42,6 +42,7 @@ class User(Base, TimestampMixin):
     institution: Mapped[Optional["Institution"]] = relationship("Institution", back_populates="users")
     comments: Mapped[List["ReviewComment"]] = relationship("ReviewComment", back_populates="author")
     assessments: Mapped[List["ComplianceAssessment"]] = relationship("ComplianceAssessment", back_populates="reviewer")
+    finding_reviews: Mapped[List["FindingReview"]] = relationship("FindingReview", back_populates="reviewer")
 
 class Application(Base, TimestampMixin):
     __tablename__ = "applications"
@@ -93,6 +94,21 @@ class Finding(Base, TimestampMixin):
     # Relationships
     application: Mapped["Application"] = relationship("Application", back_populates="findings")
     document: Mapped[Optional["Document"]] = relationship("Document", back_populates="findings")
+    reviews: Mapped[List["FindingReview"]] = relationship("FindingReview", back_populates="finding", cascade="all, delete-orphan")
+
+class FindingReview(Base):
+    """Append-only human review decisions for automated findings."""
+    __tablename__ = "finding_reviews"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    finding_id: Mapped[int] = mapped_column(ForeignKey("findings.id"), index=True)
+    reviewer_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    outcome: Mapped[str] = mapped_column(String(50))
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    finding: Mapped["Finding"] = relationship("Finding", back_populates="reviews")
+    reviewer: Mapped["User"] = relationship("User", back_populates="finding_reviews")
 
 class ReviewComment(Base):
     __tablename__ = "review_comments"
@@ -153,8 +169,12 @@ class ConsistencyRun(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     application_id: Mapped[int] = mapped_column(ForeignKey("applications.id"), index=True)
     user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True, nullable=True)
-    status: Mapped[str] = mapped_column(String(50), default="completed") # completed, failed
-    comparisons_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(
+        String(50), default="completed", server_default="completed"
+    ) # completed, failed
+    comparisons_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
 
     application: Mapped["Application"] = relationship("Application")
     results: Mapped[List["DocumentConsistencyResult"]] = relationship("DocumentConsistencyResult", back_populates="run", cascade="all, delete-orphan")

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, 
 from sqlalchemy.orm import Session
 from typing import List
 from app.db.session import get_db
-from app.models.models import Application, User, Document, ComplianceAssessment, ComplianceRule, AuditEvent, Institution, Finding, DocumentConsistencyResult, ConsistencyRun
+from app.models.models import Application, User, Document, ComplianceAssessment, ComplianceRule, AuditEvent, Institution, Finding, FindingReview, DocumentConsistencyResult, ConsistencyRun
 from app.schemas.applications import (
     ApplicationCreate,
     ApplicationUpdate,
@@ -10,11 +10,22 @@ from app.schemas.applications import (
     DocumentOut,
     DocumentProcessingOut,
     DocumentValidationPreviewOut,
-    DocumentIntegrityPreviewOut
+    DocumentIntegrityPreviewOut,
+    ConsistencyRunHistoryOut,
+    FindingOut,
+    FindingReviewCreate,
+    FindingReviewOut,
+    ApplicationChecklistOut,
 )
 from app.api.deps import get_current_user, RoleChecker
 from app.models.enums import UserRole
-from app.services.regulatory_validation import load_registry, evaluate_rule_result, evaluate_preview_eligibility, RegistryValidationError
+from app.services.regulatory_validation import (
+    load_registry,
+    evaluate_rule_result,
+    evaluate_preview_eligibility,
+    build_preview_context,
+    RegistryValidationError,
+)
 from app.services.document_processing import process_pdf, DocumentLimitError, DocumentProcessingError
 from app.services.documents import store_pdf, DocumentStorageError, DocumentTooLargeError, InvalidPDFError
 from app.services.consistency import ConsistencyService, ComparisonResult
@@ -23,8 +34,10 @@ import json
 import logging
 from pathlib import Path
 from fastapi.responses import FileResponse
+from pypdf import PdfReader
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +107,11 @@ def upload_document(
         db.add(document)
         db.flush()
         db.refresh(document)
+        duplicate_matches = db.query(Document).filter(
+            Document.application_id == application.id,
+            Document.sha256 == document.sha256,
+            Document.id != document.id,
+        ).order_by(Document.id).all()
         db.add(
             AuditEvent(
                 user_id=current_user.id,
@@ -109,6 +127,26 @@ def upload_document(
                 ),
             )
         )
+        for match in duplicate_matches:
+            description = (
+                f"Document bytes exactly match document ID {match.id} in this application "
+                "(SHA-256 comparison). This is an advisory duplicate indicator, not a fraud finding."
+            )
+            db.add(Finding(
+                application_id=application.id,
+                document_id=document.id,
+                finding_type="Duplicate document",
+                severity="Low",
+                description=description,
+                status="open",
+            ))
+            db.add(AuditEvent(
+                user_id=current_user.id,
+                action="document.duplicate_detected",
+                entity_type="document",
+                entity_id=str(document.id),
+                audit_metadata=json.dumps({"application_id": application.id, "matched_document_id": match.id}),
+            ))
         db.commit()
     except SQLAlchemyError:
         db.rollback()
@@ -280,6 +318,50 @@ def document_integrity_preview(
             "No external issuer verification, fraud determination, or compliance decision was performed.",
         ],
     }
+
+
+@router.post(
+    "/{application_id}/documents/{document_id}/integrity-check",
+    response_model=DocumentIntegrityPreviewOut,
+)
+def persist_document_integrity_check(
+    application_id: int,
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    preview = document_integrity_preview(application_id, document_id, db, current_user)
+    if preview["pdf_structure_check"]["status"] == "unknown":
+        description = "PDF structural inspection could not read the stored file. This is a processing warning and does not establish tampering or fraud."
+        exists = db.query(Finding.id).filter(
+            Finding.application_id == application_id,
+            Finding.document_id == document_id,
+            Finding.finding_type == "Document inspection warning",
+            Finding.description == description,
+            Finding.status == "open",
+        ).first()
+        if not exists:
+            db.add(Finding(
+                application_id=application_id,
+                document_id=document_id,
+                finding_type="Document inspection warning",
+                severity="Medium",
+                description=description,
+                status="open",
+            ))
+    db.add(AuditEvent(
+        user_id=current_user.id,
+        action="document.integrity_checked",
+        entity_type="document",
+        entity_id=str(document_id),
+        audit_metadata=json.dumps({"application_id": application_id, "pdf_structure": preview["pdf_structure_check"]["status"], "duplicate_check": preview["duplicate_file_check"]["status"]}),
+    ))
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Could not save integrity check results")
+    return preview
 
 
 @router.post(
@@ -521,7 +603,7 @@ def validate_document(
         "application_scope_status": "unknown",
         "overall_status": overall_status,
         "document_evidence": document_evidence,
-        "candidates": candidates,
+        "candidate_rules": candidates,
         "checks": checks,
         "limitations": [
             "Application scope is unknown because the existing model has no reviewed structured scope facts; free-form app_type is not used.",
@@ -656,8 +738,6 @@ def validate_application_all(
                 "document_id": doc.id
             })
 
-    db.query(ComplianceAssessment).filter(ComplianceAssessment.application_id == application.id).delete()
-
     for r in results:
         db_rule = db.query(ComplianceRule).filter(ComplianceRule.rule_code == r["rule_id"]).first()
         if not db_rule:
@@ -752,40 +832,278 @@ def validate_application_consistency(
                 if comparison.category != "NOT_APPLICABLE":
                     results_to_persist.append(comparison)
 
-    # Clear previous consistency results for this application to avoid duplicates on re-validation
-    db.query(DocumentConsistencyResult).filter(DocumentConsistencyResult.application_id == application.id).delete()
-
-    for res in results_to_persist:
-        db_res = DocumentConsistencyResult(
+    try:
+        run = ConsistencyRun(
             application_id=application.id,
-            field=res.field,
-            category=res.category,
-            val1=res.val1,
-            val2=res.val2,
-            norm1=res.norm1,
-            norm2=res.norm2,
-            doc1_id=res.doc1_id,
-            doc2_id=res.doc2_id,
-            explanation=res.explanation,
-            human_review_recommended=res.human_review_recommended
+            user_id=current_user.id,
+            status="completed",
+            comparisons_count=len(results_to_persist),
         )
-        db.add(db_res)
+        db.add(run)
+        db.flush()
 
-    db.add(AuditEvent(
-        user_id=current_user.id,
-        action="application.validate_consistency",
-        entity_type="application",
-        entity_id=str(application.id),
-        audit_metadata=json.dumps({"comparisons_performed": len(results_to_persist)})
-    ))
+        for res in results_to_persist:
+            db_res = DocumentConsistencyResult(
+                run=run,
+                application_id=application.id,
+                field=res.field,
+                category=res.category,
+                val1=res.val1,
+                val2=res.val2,
+                norm1=res.norm1,
+                norm2=res.norm2,
+                doc1_id=res.doc1_id,
+                doc2_id=res.doc2_id,
+                explanation=res.explanation,
+                human_review_recommended=res.human_review_recommended
+            )
+            db.add(db_res)
 
-    db.commit()
+        db.add(AuditEvent(
+            user_id=current_user.id,
+            action="application.validate_consistency",
+            entity_type="application",
+            entity_id=str(application.id),
+            audit_metadata=json.dumps({"comparisons_performed": len(results_to_persist)})
+        ))
+
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.exception("Failed to persist consistency validation")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Consistency validation could not be saved.",
+        ) from exc
 
     return {
         "application_id": application.id,
+        "run_id": run.id,
         "consistency_results_count": len(results_to_persist),
         "status": "completed"
     }
+
+
+@router.get("/{application_id}/consistency-runs", response_model=ConsistencyRunHistoryOut)
+def list_consistency_runs(
+    application_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _get_authorized_application(application_id, db, current_user)
+    runs = (
+        db.query(ConsistencyRun)
+        .filter(ConsistencyRun.application_id == application_id)
+        .order_by(ConsistencyRun.created_at.desc(), ConsistencyRun.id.desc())
+        .all()
+    )
+    return {
+        "items": [
+            {
+                "id": run.id,
+                "application_id": run.application_id,
+                "status": run.status,
+                "comparisons_count": run.comparisons_count,
+                "created_at": run.created_at,
+                "results": [
+                    {
+                        "id": result.id,
+                        "run_id": result.run_id,
+                        "application_id": result.application_id,
+                        "field": result.field,
+                        "category": result.category,
+                        "val1": result.val1,
+                        "val2": result.val2,
+                        "explanation": result.explanation,
+                        "human_review_recommended": result.human_review_recommended,
+                        "doc1_id": result.doc1_id,
+                        "doc1_filename": result.doc1.original_filename,
+                        "doc2_id": result.doc2_id,
+                        "doc2_filename": result.doc2.original_filename,
+                    }
+                    for result in run.results
+                ],
+            }
+            for run in runs
+        ]
+    }
+
+
+@router.get("/{application_id}/findings", response_model=List[FindingOut])
+def list_application_findings(
+    application_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _get_authorized_application(application_id, db, current_user)
+    findings = (
+        db.query(Finding)
+        .filter(Finding.application_id == application_id)
+        .order_by(Finding.created_at.desc(), Finding.id.desc())
+        .all()
+    )
+    return [
+        {
+            "id": finding.id,
+            "application_id": finding.application_id,
+            "document_id": finding.document_id,
+            "finding_type": finding.finding_type,
+            "severity": finding.severity,
+            "description": finding.description,
+            "status": finding.status,
+            "created_at": finding.created_at,
+            "reviews": [
+                {
+                    "id": review.id,
+                    "finding_id": review.finding_id,
+                    "reviewer_id": review.reviewer_id,
+                    "reviewer_name": review.reviewer.full_name,
+                    "outcome": review.outcome,
+                    "note": review.note,
+                    "created_at": review.created_at,
+                }
+                for review in db.query(FindingReview).filter(FindingReview.finding_id == finding.id).order_by(FindingReview.created_at, FindingReview.id).all()
+            ],
+        }
+        for finding in findings
+    ]
+
+
+@router.post("/{application_id}/validate-checklist", response_model=ApplicationChecklistOut)
+def validate_application_checklist(
+    application_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    application = _get_authorized_application(application_id, db, current_user)
+    # Demonstration checklist only; these categories and field expectations are not official AICTE rules.
+    checklist_by_category = {
+        "Standard Regulatory": {"fire_safety_certificate": ["institution_name", "certificate_number", "expiry_date"]},
+        "Technical Institution": {
+            "fire_safety_certificate": ["institution_name", "certificate_number", "expiry_date"],
+            "faculty_qualification_certificate": ["institution_name", "certificate_number"],
+            "accreditation_certificate": ["institution_name", "certificate_number"],
+        },
+        "Medical College": {
+            "fire_safety_certificate": ["institution_name", "certificate_number", "expiry_date"],
+            "faculty_qualification_certificate": ["institution_name", "certificate_number"],
+            "accreditation_certificate": ["institution_name", "certificate_number"],
+        },
+    }
+    requirements = checklist_by_category.get(application.app_type)
+    if requirements is None:
+        raise HTTPException(status_code=422, detail="No synthetic checklist is configured for this application category")
+
+    documents = db.query(Document).filter(Document.application_id == application.id).all()
+    by_type: dict[str, list[Document]] = {}
+    for document in documents:
+        by_type.setdefault(document.doc_type, []).append(document)
+    items = []
+    findings_created = 0
+    for doc_type, required_fields in requirements.items():
+        matches = by_type.get(doc_type, [])
+        missing_fields: list[str] = []
+        linked_document = matches[-1] if matches else None
+        if not matches:
+            check_status = "missing_document"
+            explanation = f"No document of type '{doc_type}' is attached to this application."
+        elif any(document.processing_status == "pending" or document.processing_status == "processing" for document in matches):
+            check_status = "processing_pending"
+            explanation = "A matching document is attached but processing is pending; required extracted fields cannot yet be checked."
+        elif all(document.processing_status in {"failed", "ocr_unavailable"} for document in matches):
+            check_status = "processing_failed"
+            explanation = "Matching document(s) are attached, but processing failed or OCR was unavailable; completeness could not be assessed."
+        else:
+            completed = [document for document in matches if document.processing_status == "completed"]
+            fields = completed[-1].processing_result.get("fields", {}) if completed and completed[-1].processing_result else {}
+            missing_fields = [name for name in required_fields if not isinstance(fields.get(name), dict) or not fields[name].get("value")]
+            if missing_fields:
+                check_status = "incomplete_fields"
+                explanation = "Required fields were not extracted: " + ", ".join(missing_fields) + ". Extraction can miss information; reviewer inspection is required."
+                linked_document = completed[-1]
+            else:
+                check_status = "received"
+                explanation = "A processed document is attached and the configured required fields were extracted; values remain unverified."
+                linked_document = completed[-1]
+        if check_status != "received":
+            description = f"Synthetic checklist requirement '{doc_type}' is {check_status}. {explanation}"
+            exists = db.query(Finding.id).filter(
+                Finding.application_id == application.id,
+                Finding.document_id == (linked_document.id if linked_document else None),
+                Finding.finding_type == "Checklist completeness",
+                Finding.description == description,
+                Finding.status == "open",
+            ).first()
+            if not exists:
+                db.add(Finding(
+                    application_id=application.id,
+                    document_id=linked_document.id if linked_document else None,
+                    finding_type="Checklist completeness",
+                    severity="Medium" if check_status in {"processing_pending", "processing_failed"} else "High",
+                    description=description,
+                    status="open",
+                ))
+                findings_created += 1
+        items.append({
+            "document_type": doc_type,
+            "status": check_status,
+            "document_ids": [document.id for document in matches],
+            "missing_fields": missing_fields,
+            "explanation": explanation,
+        })
+    db.add(AuditEvent(
+        user_id=current_user.id,
+        action="application.checklist_validated",
+        entity_type="application",
+        entity_id=str(application.id),
+        audit_metadata=json.dumps({"category": application.app_type, "findings_created": findings_created}),
+    ))
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Could not save checklist findings")
+    return {"application_id": application.id, "category": application.app_type, "source": "synthetic_demo", "items": items}
+
+
+@router.post("/{application_id}/findings/{finding_id}/reviews", response_model=FindingReviewOut, status_code=status.HTTP_201_CREATED)
+def review_application_finding(
+    application_id: int,
+    finding_id: int,
+    review_in: FindingReviewCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role != UserRole.REVIEWER.value:
+        raise HTTPException(status_code=403, detail="Only assigned reviewers can record finding decisions")
+    application = _get_authorized_application(application_id, db, current_user)
+    finding = db.query(Finding).filter(
+        Finding.id == finding_id,
+        Finding.application_id == application.id,
+    ).first()
+    if finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    review = FindingReview(
+        finding_id=finding.id,
+        reviewer_id=current_user.id,
+        outcome=review_in.outcome,
+        note=review_in.note,
+    )
+    db.add(review)
+    db.add(AuditEvent(
+        user_id=current_user.id,
+        action="finding.review_recorded",
+        entity_type="finding",
+        entity_id=str(finding.id),
+        audit_metadata=json.dumps({"application_id": application.id, "outcome": review_in.outcome}),
+    ))
+    try:
+        db.commit()
+        db.refresh(review)
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Could not save reviewer decision")
+    return {"id": review.id, "finding_id": finding.id, "outcome": review.outcome, "reviewer_id": current_user.id, "reviewer_name": current_user.full_name, "note": review.note, "created_at": review.created_at}
 
 @router.post("/", response_model=ApplicationOut, status_code=status.HTTP_201_CREATED)
 def create_application(

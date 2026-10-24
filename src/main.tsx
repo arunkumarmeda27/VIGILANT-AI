@@ -68,6 +68,47 @@ type ComplianceAssessment = {
   reviewer_name: string | null;
 };
 type ComplianceAssessmentPage = { items: ComplianceAssessment[]; total: number };
+type ConsistencyResultRecord = {
+  id: number;
+  run_id: number;
+  application_id: number;
+  field: string;
+  category: 'MATCH' | 'CONFIRMED_MISMATCH' | 'POSSIBLE_MISMATCH' | 'INSUFFICIENT_EVIDENCE' | 'NOT_APPLICABLE' | string;
+  val1: string | null;
+  val2: string | null;
+  explanation: string;
+  human_review_recommended: boolean;
+  doc1_id: number;
+  doc1_filename: string;
+  doc2_id: number;
+  doc2_filename: string;
+};
+type ConsistencyRunRecord = {
+  id: number;
+  application_id: number;
+  status: string;
+  comparisons_count: number;
+  created_at: string;
+  results: ConsistencyResultRecord[];
+};
+type ConsistencyRunHistory = { items: ConsistencyRunRecord[] };
+type PersistedFinding = {
+  id: number;
+  application_id: number;
+  document_id: number | null;
+  finding_type: string;
+  severity: string;
+  description: string;
+  status: string;
+  created_at: string;
+  reviews: { id: number; finding_id: number; reviewer_id: number; reviewer_name: string; outcome: 'confirmed_issue' | 'false_positive' | 'needs_further_review'; note: string; created_at: string }[];
+};
+type ApplicationChecklist = {
+  application_id: number;
+  category: string;
+  source: 'synthetic_demo';
+  items: { document_type: string; status: string; document_ids: number[]; missing_fields: string[]; explanation: string }[];
+};
 type PersistedDocument = {
   id: number;
   application_id: number;
@@ -732,8 +773,18 @@ function PersistedApplicationDetail() {
   const { token, user, logout } = useAuth();
   const [application, setApplication] = useState<PersistedApplication | null>(null);
   const [documents, setDocuments] = useState<PersistedDocument[]>([]);
+  const [consistencyRuns, setConsistencyRuns] = useState<ConsistencyRunRecord[]>([]);
+  const [assessments, setAssessments] = useState<ComplianceAssessment[]>([]);
+  const [findings, setFindings] = useState<PersistedFinding[]>([]);
+  const [checklist, setChecklist] = useState<ApplicationChecklist | null>(null);
+  const [reviewDrafts, setReviewDrafts] = useState<Record<number, { outcome: string; note: string }>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [validatingConsistency, setValidatingConsistency] = useState(false);
+  const [validatingRules, setValidatingRules] = useState(false);
+  const [validatingChecklist, setValidatingChecklist] = useState(false);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
+  const [workflowNotice, setWorkflowNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [entityName, setEntityName] = useState('');
@@ -751,13 +802,19 @@ function PersistedApplicationDetail() {
     Promise.all([
       requestApi<PersistedApplication>(`/api/applications/${id}`, token),
       requestApi<PersistedDocument[]>(`/api/applications/${id}/documents`, token),
-    ]).then(([app, docs]) => {
+      requestApi<ConsistencyRunHistory>(`/api/applications/${id}/consistency-runs`, token),
+      requestApi<PersistedFinding[]>(`/api/applications/${id}/findings`, token),
+      requestApi<ComplianceAssessmentPage>('/api/compliance-assessments/?limit=200', token),
+    ]).then(([app, docs, history, persistedFindings, assessmentPage]) => {
       if (cancelled) return;
       setApplication(app);
       setEntityName(app.entity_name);
       setAppType(app.app_type);
       setStatus(app.status || '');
       setDocuments(docs);
+      setConsistencyRuns(history.items);
+      setFindings(persistedFindings);
+      setAssessments(assessmentPage.items.filter(item => item.application_id === app.id));
     }).catch(reason => {
       if (cancelled) return;
       if (reason instanceof ApiRequestError && reason.status === 401) {
@@ -769,6 +826,81 @@ function PersistedApplicationDetail() {
     }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [id, token, logout]);
+
+  const runConsistencyValidation = async () => {
+    if (!token || !application || validatingConsistency) return;
+    setValidatingConsistency(true);
+    setWorkflowError(null);
+    setWorkflowNotice(null);
+    try {
+      await requestApi<{ run_id: number }>(`/api/applications/${application.id}/validate-consistency`, token, { method: 'POST' });
+      const history = await requestApi<ConsistencyRunHistory>(`/api/applications/${application.id}/consistency-runs`, token);
+      setConsistencyRuns(history.items);
+      setWorkflowNotice('Validation run saved. Previous runs remain available below.');
+    } catch (reason) {
+      if (reason instanceof ApiRequestError && reason.status === 401) {
+        logout();
+        setWorkflowError('Your session has expired. Please sign in again.');
+      } else {
+        setWorkflowError(reason instanceof ApiRequestError ? reason.message : 'Could not save cross-document validation.');
+      }
+    } finally {
+      setValidatingConsistency(false);
+    }
+  };
+
+  const runRegulatoryValidation = async () => {
+    if (!token || !application || validatingRules) return;
+    setValidatingRules(true);
+    setWorkflowError(null);
+    setWorkflowNotice(null);
+    try {
+      await requestApi(`/api/applications/${application.id}/validate-all`, token, { method: 'POST' });
+      const assessmentPage = await requestApi<ComplianceAssessmentPage>('/api/compliance-assessments/?limit=200', token);
+      setAssessments(assessmentPage.items.filter(item => item.application_id === application.id));
+      setFindings(await requestApi<PersistedFinding[]>(`/api/applications/${application.id}/findings`, token));
+      setWorkflowNotice('Registry assessments saved and loaded from the backend. Review their source and scope status below.');
+    } catch (reason) {
+      if (reason instanceof ApiRequestError && reason.status === 401) {
+        logout();
+        setWorkflowError('Your session has expired. Please sign in again.');
+      } else {
+        setWorkflowError(reason instanceof ApiRequestError ? reason.message : 'Could not run regulatory validation.');
+      }
+    } finally {
+      setValidatingRules(false);
+    }
+  };
+
+  const runChecklistValidation = async () => {
+    if (!token || !application || validatingChecklist) return;
+    setValidatingChecklist(true); setWorkflowError(null); setWorkflowNotice(null);
+    try {
+      const result = await requestApi<ApplicationChecklist>(`/api/applications/${application.id}/validate-checklist`, token, { method: 'POST' });
+      setChecklist(result);
+      setFindings(await requestApi<PersistedFinding[]>(`/api/applications/${application.id}/findings`, token));
+      setWorkflowNotice('Synthetic checklist results and advisory findings were saved.');
+    } catch (reason) {
+      if (reason instanceof ApiRequestError && reason.status === 401) { logout(); setWorkflowError('Your session has expired. Please sign in again.'); }
+      else setWorkflowError(reason instanceof ApiRequestError ? reason.message : 'Could not run the checklist.');
+    } finally { setValidatingChecklist(false); }
+  };
+
+  const submitFindingReview = async (finding: PersistedFinding) => {
+    if (!token || !application) return;
+    const draft = reviewDrafts[finding.id] ?? { outcome: 'needs_further_review', note: '' };
+    setWorkflowError(null);
+    try {
+      await requestApi(`/api/applications/${application.id}/findings/${finding.id}/reviews`, token, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft),
+      });
+      setFindings(await requestApi<PersistedFinding[]>(`/api/applications/${application.id}/findings`, token));
+      setWorkflowNotice('Reviewer decision recorded in the audit history.');
+    } catch (reason) {
+      if (reason instanceof ApiRequestError && reason.status === 401) { logout(); setWorkflowError('Your session has expired. Please sign in again.'); }
+      else setWorkflowError(reason instanceof ApiRequestError ? reason.message : 'Could not save reviewer decision.');
+    }
+  };
 
   const update = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -829,6 +961,78 @@ function PersistedApplicationDetail() {
               <Link className="button primary" to={`/verification?application_id=${application.id}`}>Open document workspace</Link>
               <Link className="button secondary" to="/applications">Back to applications</Link>
             </div>
+          </section>
+          <section className="content-section">
+            <Heading title="Validation workflow" text="Run backend validation against this application's persisted documents and review stored results." />
+            {workflowError && <div className="validation-error" role="alert"><AlertTriangle size={18} aria-hidden="true" />{workflowError}</div>}
+            {workflowNotice && <p className="validation-meta" role="status">{workflowNotice}</p>}
+            <div className="live-page-actions">
+              <button className="button secondary" type="button" onClick={runRegulatoryValidation} disabled={validatingRules || !documents.some(document => document.processing_status === 'completed')}>
+                {validatingRules ? <Loader2 size={17} className="spin" aria-hidden="true" /> : null}{validatingRules ? 'Validating…' : 'Run regulatory validation'}
+              </button>
+              <button className="button secondary" type="button" onClick={runChecklistValidation} disabled={validatingChecklist}>
+                {validatingChecklist ? <Loader2 size={17} className="spin" aria-hidden="true" /> : null}{validatingChecklist ? 'Checking…' : 'Run document checklist'}
+              </button>
+              <button className="button primary" type="button" onClick={runConsistencyValidation} disabled={validatingConsistency || documents.filter(document => document.processing_status === 'completed').length < 2}>
+                {validatingConsistency ? <Loader2 size={17} className="spin" aria-hidden="true" /> : null}{validatingConsistency ? 'Comparing documents…' : 'Run cross-document validation'}
+              </button>
+              <Link className="button secondary" to={`/verification?application_id=${application.id}`}>Manage and process documents</Link>
+            </div>
+            <p className="validation-disclaimer">Regulatory statuses reflect the configured registry and extracted evidence only. Candidate rules may be synthetic, unapproved, or not confirmed current; results are not official legal or compliance determinations.</p>
+          </section>
+          <section className="content-section">
+            <Heading title="Application document checklist" text="Category-based synthetic demonstration requirements; this is not an official AICTE checklist." />
+            {checklist ? <div className="validation-check-list">{checklist.items.map(item => <article className="validation-check" key={item.document_type}>
+              <strong>{item.document_type.replaceAll('_', ' ')} · {item.status.replaceAll('_', ' ')}</strong>
+              <p>{item.explanation}</p><small>Document IDs: {item.document_ids.length ? item.document_ids.join(', ') : 'None'}{item.missing_fields.length ? ` · Missing extracted fields: ${item.missing_fields.join(', ')}` : ''}</small>
+            </article>)}</div> : <p className="validation-meta">Run the checklist to inspect configured document types, processing state, and extracted-field presence.</p>}
+          </section>
+          <section className="content-section">
+            <Heading title="Persisted regulatory assessments" text="Assessment records returned by the authorized API for this application." />
+            {assessments.length ? <div className="validation-check-list">{assessments.map(assessment => (
+              <article className="validation-check" key={assessment.id}>
+                <strong>{assessment.rule_code} · {assessment.category} · {assessment.status}</strong>
+                <p>{assessment.explanation}</p>
+                <small>Assessed {new Date(assessment.assessed_at).toLocaleString()} · Reviewer: {assessment.reviewer_name || 'Unassigned'}</small>
+              </article>
+            ))}</div> : <p className="validation-meta">No persisted assessments are available for this application.</p>}
+          </section>
+          <section className="content-section">
+            <Heading title="Persisted findings" text="Findings created by the backend validation workflow, with linked document references where available." />
+            {findings.length ? findings.map(finding => (
+              <article className="validation-check" key={finding.id}>
+                <strong>{finding.finding_type} · {finding.severity} · {finding.status}</strong>
+                <p>{finding.description}</p>
+                <small>Recorded {new Date(finding.created_at).toLocaleString()} · Document: {finding.document_id ?? 'Not linked'}</small>
+                {finding.reviews.map(review => <p key={review.id}><b>{review.outcome.replaceAll('_', ' ')}</b> · {review.reviewer_name} · {new Date(review.created_at).toLocaleString()}{review.note ? ` · ${review.note}` : ''}</p>)}
+                {user?.role === 'REVIEWER' && <div className="application-form live-application-form">
+                  <label>Review outcome<select value={reviewDrafts[finding.id]?.outcome ?? 'needs_further_review'} onChange={event => setReviewDrafts(current => ({ ...current, [finding.id]: { outcome: event.target.value, note: current[finding.id]?.note ?? '' } }))}>
+                    <option value="confirmed_issue">Confirmed issue</option><option value="false_positive">False positive</option><option value="needs_further_review">Needs further review</option>
+                  </select></label>
+                  <label>Reviewer note<textarea maxLength={2000} value={reviewDrafts[finding.id]?.note ?? ''} onChange={event => setReviewDrafts(current => ({ ...current, [finding.id]: { outcome: current[finding.id]?.outcome ?? 'needs_further_review', note: event.target.value } }))} /></label>
+                  <button className="button secondary" type="button" onClick={() => submitFindingReview(finding)}>Record review</button>
+                </div>}
+              </article>
+            )) : <p className="validation-meta">No persisted findings are recorded for this application.</p>}
+            <Link className="button secondary" to="/audit-trail">Open authorized audit history</Link>
+          </section>
+          <section className="content-section">
+            <Heading title="Cross-document validation history" text="Every run and comparison below is loaded from persisted backend records." />
+            {consistencyRuns.length ? consistencyRuns.map(run => (
+              <article className="validation-rule" key={run.id}>
+                <div className="validation-rule-title"><h3>Run {run.id}</h3><span className="validation-status">{run.status} · {run.comparisons_count} comparisons</span></div>
+                <p className="validation-meta">{new Date(run.created_at).toLocaleString()}</p>
+                {run.results.length ? run.results.map(result => (
+                  <div className="validation-check" key={result.id}>
+                    <strong>{result.field.replaceAll('_', ' ')} · {result.category}</strong>
+                    <p>{result.doc1_filename} (ID {result.doc1_id}): {result.val1 ?? 'No extracted value'}</p>
+                    <p>{result.doc2_filename} (ID {result.doc2_id}): {result.val2 ?? 'No extracted value'}</p>
+                    <p>{result.explanation}</p>
+                    {result.human_review_recommended && <p><b>Human review recommended.</b></p>}
+                  </div>
+                )) : <p className="validation-meta">No comparable extracted fields were returned in this run.</p>}
+              </article>
+            )) : <p className="validation-meta">No cross-document validation runs have been recorded for this application.</p>}
           </section>
           {(canEditDetails || canEditStatus) && (
             <section className="content-section">
@@ -1300,8 +1504,9 @@ function GlobalVerification() {
     setError(null);
     try {
       const result = await requestApi<DocumentIntegrityPreview>(
-        `/api/applications/${document.application_id}/documents/${document.id}/integrity-preview`,
+        `/api/applications/${document.application_id}/documents/${document.id}/integrity-check`,
         token,
+        { method: 'POST' },
       );
       setIntegrityResults(current => ({ ...current, [document.id]: result }));
     } catch (reason) {

@@ -206,3 +206,78 @@ class ComplianceAssessmentOut(BaseModel):
 class ComplianceAssessmentPageOut(BaseModel):
     items: list[ComplianceAssessmentOut]
     total: int
+
+
+class ConsistencyResultOut(BaseModel):
+    id: int
+    run_id: int
+    application_id: int
+    field: str
+    category: str
+    val1: Optional[str]
+    val2: Optional[str]
+    explanation: str
+    human_review_recommended: bool
+    doc1_id: int
+    doc1_filename: str
+    doc2_id: int
+    doc2_filename: str
+
+
+class ConsistencyRunOut(BaseModel):
+    id: int
+    application_id: int
+    status: str
+    comparisons_count: int
+    created_at: datetime
+    results: list[ConsistencyResultOut]
+
+
+class ConsistencyRunHistoryOut(BaseModel):
+    items: list[ConsistencyRunOut]
+
+
+class FindingReviewOut(BaseModel):
+    id: int
+    finding_id: int
+    reviewer_id: int
+    reviewer_name: str
+    outcome: Literal["confirmed_issue", "false_positive", "needs_further_review"]
+    note: str
+    created_at: datetime
+
+
+class FindingOut(BaseModel):
+    id: int
+    application_id: int
+    document_id: Optional[int]
+    finding_type: str
+    severity: str
+    description: str
+    status: str
+    created_at: datetime
+    reviews: list[FindingReviewOut] = Field(default_factory=list)
+
+    class Config:
+        from_attributes = True
+
+
+class FindingReviewCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    outcome: Literal["confirmed_issue", "false_positive", "needs_further_review"]
+    note: str = Field(default="", max_length=2000)
+
+
+class ChecklistItemOut(BaseModel):
+    document_type: str
+    status: Literal["missing_document", "processing_pending", "processing_failed", "incomplete_fields", "received"]
+    document_ids: list[int] = Field(default_factory=list)
+    missing_fields: list[str] = Field(default_factory=list)
+    explanation: str
+
+
+class ApplicationChecklistOut(BaseModel):
+    application_id: int
+    category: str
+    source: Literal["synthetic_demo"] = "synthetic_demo"
+    items: list[ChecklistItemOut]

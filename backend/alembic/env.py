@@ -5,7 +5,7 @@ from alembic import context
 # Import the app settings and models
 from app.core.config import settings
 from app.db.base import Base
-from app.models.models import User, Application, Document, Finding, ReviewComment, ComplianceRule, ComplianceAssessment, AuditEvent
+from app.models.models import User, Application, Document, Finding, FindingReview, ReviewComment, ComplianceRule, ComplianceAssessment, AuditEvent
 
 config = context.config
 

@@ -6,9 +6,20 @@ from app.main import app
 from app.db.base import Base
 from app.core.security import get_password_hash
 from app.models.enums import UserRole
-from app.models.models import User, Application, Document, Institution, ComplianceAssessment, Finding
+from app.models.models import User, Application, Document, Institution, ComplianceAssessment, ComplianceRule, Finding
 from app.db.session import get_db as real_get_db
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from app.api.routes import applications as application_routes
+from app.services.regulatory_validation import load_registry
+
+TEST_REGISTRY_PATH = (
+    Path(__file__).parents[1]
+    / "data"
+    / "processed"
+    / "regulatory_rules"
+    / "fire_safety_preview_registry.json"
+)
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///test_compliance_bridge.db"
 
@@ -25,11 +36,16 @@ def override_get_db():
     finally:
         db.close()
 
-app.dependency_overrides[real_get_db] = override_get_db
 client = TestClient(app)
 
 @pytest.fixture(scope="function", autouse=True)
-def setup_db():
+def setup_db(monkeypatch):
+    monkeypatch.setitem(app.dependency_overrides, real_get_db, override_get_db)
+    monkeypatch.setattr(
+        application_routes,
+        "load_registry",
+        lambda: load_registry(TEST_REGISTRY_PATH),
+    )
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     yield
@@ -117,12 +133,59 @@ def test_validate_all_success():
     results = {r["rule_id"]: r["status"] for r in data["results"]}
     assert results["FS-001"] == "Compliant"
     assert results["FS-002"] == "Compliant"
+    findings_response = client.get(
+        f"/api/applications/{app_id}/findings",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert findings_response.status_code == 200
+    assert isinstance(findings_response.json(), list)
 
     # Verify persistence
     session = TestingSessionLocal()
     assessments = session.query(ComplianceAssessment).filter(ComplianceAssessment.application_id == app_id).all()
     assert len(assessments) >= 2
     session.close()
+
+
+def test_validate_all_preserves_preexisting_assessments():
+    inst_id = create_institution()
+    user_email = create_test_user(institution_id=inst_id)
+    token = get_token(user_email)
+    app_id = create_application(inst_id=inst_id)
+    create_processed_document(app_id, "fire_safety_certificate", {
+        "certificate_number": {"value": "CERT123", "status": "extracted"},
+        "expiry_date": {"value": (datetime.now(timezone.utc) + timedelta(days=365)).isoformat(), "status": "extracted"},
+    })
+
+    session = TestingSessionLocal()
+    rule = ComplianceRule(
+        rule_code="EXISTING-REVIEW",
+        title="Existing human review",
+        description="Must remain preserved after another validation.",
+        category="test",
+    )
+    session.add(rule)
+    session.flush()
+    assessment = ComplianceAssessment(
+        application_id=app_id,
+        rule_id=rule.id,
+        status="Partial",
+        explanation="Previously recorded reviewer assessment.",
+    )
+    session.add(assessment)
+    session.commit()
+    assessment_id = assessment.id
+    session.close()
+
+    response = client.post(
+        f"/api/applications/{app_id}/validate-all",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    with TestingSessionLocal() as session:
+        preserved = session.query(ComplianceAssessment).filter_by(id=assessment_id).one()
+        assert preserved.status == "Partial"
+        assert preserved.explanation == "Previously recorded reviewer assessment."
 
 def test_validate_all_expired_certificate():
     inst_id = create_institution()
