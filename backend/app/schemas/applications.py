@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Literal, Optional
 from datetime import datetime
 
 class ApplicationBase(BaseModel):
@@ -8,16 +8,24 @@ class ApplicationBase(BaseModel):
     app_type: str = Field(..., example="Standard Regulatory", description="Type of application")
     status: Optional[str] = Field(None, example="submitted", description="Current status of the application")
 
-class ApplicationCreate(ApplicationBase):
-    pass
+class ApplicationCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    reference: str = Field(..., min_length=1, max_length=100, description="Unique application reference number")
+    entity_name: str = Field(..., min_length=1, max_length=255, description="Name of the applicant or institution")
+    app_type: str = Field(..., min_length=1, max_length=100, description="Type of application")
+    institution_id: Optional[int] = Field(None, gt=0, description="Institution selected by an administrator")
 
 class ApplicationUpdate(BaseModel):
-    entity_name: Optional[str] = None
-    app_type: Optional[str] = None
-    status: Optional[str] = None
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    entity_name: Optional[str] = Field(None, min_length=1, max_length=255)
+    app_type: Optional[str] = Field(None, min_length=1, max_length=100)
+    status: Optional[str] = Field(None, min_length=1, max_length=50)
 
 class ApplicationOut(ApplicationBase):
     id: int
+    institution_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
@@ -52,3 +60,149 @@ class DocumentProcessingOut(BaseModel):
     fields: dict[str, ExtractedFieldOut]
     warnings: list[str]
     processed_at: Optional[datetime] = None
+
+
+class ValidationReviewOut(BaseModel):
+    status: str
+    reviewer: Optional[str]
+    reviewed_at: Optional[datetime]
+    notes: str
+
+
+class ValidationDocumentFieldOut(BaseModel):
+    value: Optional[str]
+    page: Optional[int]
+    evidence: Optional[str]
+    confidence: Optional[float]
+    status: str
+    verification_status: Literal["unverified"] = "unverified"
+
+
+class ValidationDocumentEvidenceOut(BaseModel):
+    document_id: int
+    processing_status: str
+    extraction_method: str
+    processed_at: Optional[datetime]
+    fields: dict[str, ValidationDocumentFieldOut]
+    warnings: list[str]
+
+
+class ValidationRuleSourceOut(BaseModel):
+    handbook_version: str
+    source_path: str
+    section: str
+    printed_page: int
+    pdf_page: int
+
+
+class ValidationRuleEvidenceOut(BaseModel):
+    rule_id: str
+    clause_text: str
+    source: ValidationRuleSourceOut
+
+
+class ValidationRuleCandidateOut(BaseModel):
+    rule_id: str
+    document_type: str
+    candidate_requirement: str
+    known_scope: str
+    source_mapping_review: ValidationReviewOut
+    currentness_review: ValidationReviewOut
+    applicability_review: ValidationReviewOut
+    preview_approved: bool
+    eligibility: Literal["unknown", "not_applicable", "eligible_for_preview"]
+    evidence: ValidationRuleEvidenceOut
+
+
+class ValidationCheckOut(BaseModel):
+    rule_id: str
+    status: Literal["unknown", "not_assessed"]
+    reason: str
+
+
+class DocumentValidationPreviewOut(BaseModel):
+    application_id: int
+    document_id: int
+    application_scope_status: Literal["unknown"]
+    overall_status: Literal["unknown", "not_assessed"]
+    document_evidence: ValidationDocumentEvidenceOut
+    candidate_rules: list[ValidationRuleCandidateOut]
+    checks: list[ValidationCheckOut]
+    limitations: list[str]
+    warnings: list[str]
+
+
+class InstitutionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(..., min_length=1, max_length=255)
+
+
+class InstitutionOut(BaseModel):
+    id: int
+    name: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AuditEventOut(BaseModel):
+    id: int
+    user_id: Optional[int]
+    actor_name: Optional[str]
+    action: str
+    entity_type: str
+    entity_id: str
+    timestamp: datetime
+    metadata: dict[str, object]
+
+
+class AuditEventPageOut(BaseModel):
+    items: list[AuditEventOut]
+    limit: int
+    offset: int
+    total: int
+
+
+class DuplicateFileMatchOut(BaseModel):
+    document_id: int
+    original_filename: str
+
+
+class AuthenticityCheckOut(BaseModel):
+    status: str
+    explanation: str
+    matches: list[DuplicateFileMatchOut] = Field(default_factory=list)
+
+
+class DocumentIntegrityPreviewOut(BaseModel):
+    application_id: int
+    document_id: int
+    sha256: Optional[str]
+    duplicate_file_check: AuthenticityCheckOut
+    pdf_structure_check: AuthenticityCheckOut
+    metadata_check: AuthenticityCheckOut
+    issuer_verification: Literal["not_performed"]
+    authenticity_status: Literal["not_assessed"]
+    limitations: list[str]
+
+
+class ComplianceAssessmentOut(BaseModel):
+    id: int
+    application_id: int
+    application_reference: str
+    entity_name: str
+    rule_code: str
+    rule_title: str
+    category: str
+    status: str
+    explanation: str
+    assessed_at: datetime
+    reviewer_name: Optional[str]
+
+
+class ComplianceAssessmentPageOut(BaseModel):
+    items: list[ComplianceAssessmentOut]
+    total: int

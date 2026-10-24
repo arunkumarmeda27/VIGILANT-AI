@@ -1,0 +1,216 @@
+{
+  "registry_version": 1,
+  "source": "AICTE Approval Process Handbook 2024-2027",
+  "rules": [
+    {
+      "rule_id": "DOCUMENT-0004",
+      "document_type": "fire_safety_certificate",
+      "candidate_requirement": "A valid Fire Safety Certificate issued by the Competent Authority.",
+      "clause_text": "A valid Fire Safety Certificate issued by the Competent Authority.",
+      "handbook_version": "2024-2027",
+      "source_path": "data/raw/regulatory_documents/AICTE_Approval_Process_Handbook_2024-2027.pdf",
+      "section": "1.1(v)",
+      "printed_page": 77,
+      "pdf_page": 93,
+      "scope": {
+        "known_scope": "New technical institution",
+        "allowed_facts": {
+          "institution_type": [
+            "new_technical_institution"
+          ]
+        },
+        "required_facts": [
+          "institution_type"
+        ],
+        "conditions": [
+          "The handbook lists the certificate for documents presented at scrutiny/re-scrutiny."
+        ]
+      },
+      "source_mapping_review": {
+        "status": "needs_correction",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "The CSV source_page value is incorrect for section 1.1(v). The inspected handbook mapping is printed page 77, PDF page 93; this correction has not been formally approved.",
+        "verified_mapping": null
+      },
+      "currentness_review": {
+        "status": "not_reviewed",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "Confirm the applicable current handbook, notices, amendments, and corrigenda."
+      },
+      "applicability_review": {
+        "status": "unknown",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "Establish the application-specific institution type and scrutiny stage."
+      },
+      "preview_approved": false
+    },
+    {
+      "rule_id": "DOCUMENT-0012",
+      "document_type": "fire_safety_certificate",
+      "candidate_requirement": "A valid Fire Safety Certificate issued by the Competent Authority.",
+      "clause_text": "A valid Fire Safety Certificate issued by the Competent Authority.",
+      "handbook_version": "2024-2027",
+      "source_path": "data/raw/regulatory_documents/AICTE_Approval_Process_Handbook_2024-2027.pdf",
+      "section": "2.1(v)",
+      "printed_page": 81,
+      "pdf_page": 97,
+      "scope": {
+        "known_scope": "Existing institution seeking EoA based on self-disclosure, after a break in preceding academic years, or restoration of intake",
+        "allowed_facts": {
+          "institution_type": [
+            "existing_technical_institution"
+          ],
+          "application_process": [
+            "eoa_self_disclosure",
+            "eoa_after_academic_break",
+            "restoration_of_intake"
+          ]
+        },
+        "required_facts": [
+          "institution_type",
+          "application_process"
+        ],
+        "conditions": [
+          "The cited clause is listed under Annexure-2, section 2.1.",
+          "A nearby provision addresses certain government buildings older than 50 years when original documents cannot be submitted; the cited fire-certificate item does not state an exemption."
+        ]
+      },
+      "source_mapping_review": {
+        "status": "verified",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "Section and printed/PDF page mapping match the inspected handbook. Reviewer identity and formal review timestamp have not been recorded.",
+        "verified_mapping": {
+          "section": "2.1(v)",
+          "printed_page": 81,
+          "pdf_page": 97
+        }
+      },
+      "currentness_review": {
+        "status": "not_reviewed",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "Confirm the applicable current handbook, notices, amendments, and corrigenda."
+      },
+      "applicability_review": {
+        "status": "unknown",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "Confirm the application follows one of the listed EoA/restoration processes."
+      },
+      "preview_approved": false
+    },
+    {
+      "rule_id": "DOCUMENT-0021",
+      "document_type": "fire_safety_certificate",
+      "candidate_requirement": "Additional evidence for private lease of building",
+      "clause_text": "Documents showing ownership of Land/ Building as per the provisions of Section 8 of the Transfer of Property Act, 1882 or any other Law for the time being in force relating to transfer of property to or by Companies, Associations or bodies of individuals, in the name of the Applicant in the form of Registered Settlement Deed/ Registered Sale Deed/ Irrevocable Gift Deed (Registered)/ Irrevocable Government/ Private Lease Deed (Registered) (for a period of minimum 30 years) (including Commitment for continued lease) with at least live Lease of 5 years duration of programs at the time of submission of application.",
+      "handbook_version": "2024-2027",
+      "source_path": "data/raw/regulatory_documents/AICTE_Approval_Process_Handbook_2024-2027.pdf",
+      "section": "1.1(xii)",
+      "printed_page": 77,
+      "pdf_page": 93,
+      "scope": {
+        "known_scope": "Candidate was intended for new technical institutions using privately leased buildings; the currently mapped clause is land ownership, not the fire-safety checklist.",
+        "allowed_facts": {
+          "institution_type": [
+            "new_technical_institution"
+          ],
+          "building_tenure": [
+            "private_lease_building"
+          ]
+        },
+        "required_facts": [
+          "institution_type",
+          "building_tenure"
+        ],
+        "conditions": [
+          "The existing section 1.1(xii) mapping is incorrect for the fire-safety requirement.",
+          "A candidate fire-safety clause appears as item (v) under the Private Lease of Building checklist on printed page 78, PDF page 94.",
+          "The candidate correction and the complete applicable checklist require review before this rule can be used."
+        ]
+      },
+      "proposed_correction": {
+        "section": "Annexure-1, Private Lease of Building, item (v)",
+        "clause_text": "A valid Fire Safety Certificate issued by the Competent Authority.",
+        "printed_page": 78,
+        "pdf_page": 94,
+        "status": "unreviewed_candidate"
+      },
+      "source_mapping_review": {
+        "status": "needs_correction",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "The existing CSV mapping points to section 1.1(xii), which concerns land ownership. The candidate private-lease-building item (v) on printed page 78/PDF page 94 is recorded separately and is not approved.",
+        "verified_mapping": null
+      },
+      "currentness_review": {
+        "status": "not_reviewed",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "Confirm the applicable current handbook, notices, amendments, and corrigenda."
+      },
+      "applicability_review": {
+        "status": "unknown",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "Confirm new-institution status, private lease of building, and full checklist applicability."
+      },
+      "preview_approved": false
+    },
+    {
+      "rule_id": "INFRASTRUCTURE-0002",
+      "document_type": "fire_safety_certificate",
+      "candidate_requirement": "Fire and life Safety Certificate from Fire Department of the concerned State Government authority is to be taken before submitting the application at AICTE.",
+      "clause_text": "Fire and life Safety Certificate from Fire Department of the concerned State Government authority is to be taken before submitting the application at AICTE.",
+      "handbook_version": "2024-2027",
+      "source_path": "data/raw/regulatory_documents/AICTE_Approval_Process_Handbook_2024-2027.pdf",
+      "section": "3.1(d)",
+      "printed_page": 86,
+      "pdf_page": 102,
+      "scope": {
+        "known_scope": "Land requirements for institutions offering Diploma/UG/PG technical programmes; the clause states that the certificate is to be obtained before submitting the application at AICTE.",
+        "allowed_facts": {
+          "institution_type": [
+            "technical_institution"
+          ],
+          "application_category": [
+            "new_technical_institution",
+            "existing_technical_institution"
+          ]
+        },
+        "required_facts": [
+          "institution_type",
+          "application_category"
+        ],
+        "conditions": [
+          "The clause appears under Annexure-3, land requirements.",
+          "Do not infer application-wide applicability from this infrastructure clause; the specific application category and relevant provisions must be established."
+        ]
+      },
+      "source_mapping_review": {
+        "status": "needs_correction",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "The CSV source_page value is incorrect for section 3.1(d). The inspected handbook mapping is printed page 86, PDF page 102; this correction has not been formally approved.",
+        "verified_mapping": null
+      },
+      "currentness_review": {
+        "status": "not_reviewed",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "Confirm the applicable current handbook, notices, amendments, and corrigenda."
+      },
+      "applicability_review": {
+        "status": "unknown",
+        "reviewer": null,
+        "reviewed_at": null,
+        "notes": "Require explicit technical-institution and application-category facts; do not apply to every application."
+      },
+      "preview_approved": false
+    }
+  ]
+}

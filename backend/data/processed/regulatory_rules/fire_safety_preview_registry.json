@@ -1,0 +1,96 @@
+{
+  "registry_version": 1,
+  "source": "Demo Fire Safety Registry (Synthetic)",
+  "rules": [
+    {
+      "rule_id": "FS-001",
+      "document_type": "fire_safety_certificate",
+      "candidate_requirement": "The institution must possess a valid Fire Safety Certificate issued by the competent authority.",
+      "clause_text": "Every institution shall maintain a valid fire safety certificate from the state fire services.",
+      "handbook_version": "2024-Demo",
+      "source_path": "fire_safety_handbook_demo.pdf",
+      "section": "Section 4.1",
+      "printed_page": 12,
+      "pdf_page": 14,
+      "scope": {
+        "known_scope": "all_institutions",
+        "allowed_facts": {
+          "institution_category": ["Standard", "Technical", "Medical"]
+        },
+        "required_facts": ["institution_category"],
+        "conditions": []
+      },
+      "source_mapping_review": {
+        "status": "verified",
+        "reviewer": "System Architect",
+        "reviewed_at": "2026-10-24T10:00:00Z",
+        "notes": "Mapped to standard state fire safety requirement.",
+        "verified_mapping": {
+          "section": "Section 4.1",
+          "printed_page": 12,
+          "pdf_page": 14
+        }
+      },
+      "currentness_review": {
+        "status": "verified_current",
+        "reviewer": "System Architect",
+        "reviewed_at": "2026-10-24T10:00:00Z",
+        "notes": "Current for 2026 demo.",
+        "verified_current": true
+      },
+      "applicability_review": {
+        "status": "reviewed",
+        "reviewer": "System Architect",
+        "reviewed_at": "2026-10-24T10:00:00Z",
+        "notes": "Applicable to all standard categories.",
+        "reviewed": true
+      },
+      "preview_approved": true
+    },
+    {
+      "rule_id": "FS-002",
+      "document_type": "fire_safety_certificate",
+      "candidate_requirement": "The Fire Safety Certificate must not be expired.",
+      "clause_text": "The fire safety certificate must be valid on the date of application.",
+      "handbook_version": "2024-Demo",
+      "source_path": "fire_safety_handbook_demo.pdf",
+      "section": "Section 4.2",
+      "printed_page": 13,
+      "pdf_page": 15,
+      "scope": {
+        "known_scope": "all_institutions",
+        "allowed_facts": {
+          "institution_category": ["Standard", "Technical", "Medical"]
+        },
+        "required_facts": ["institution_category"],
+        "conditions": []
+      },
+      "source_mapping_review": {
+        "status": "verified",
+        "reviewer": "System Architect",
+        "reviewed_at": "2026-10-24T10:00:00Z",
+        "notes": "Mapped to expiration check.",
+        "verified_mapping": {
+          "section": "Section 4.2",
+          "printed_page": 13,
+          "pdf_page": 15
+        }
+      },
+      "currentness_review": {
+        "status": "verified_current",
+        "reviewer": "System Architect",
+        "reviewed_at": "2026-10-24T10:00:00Z",
+        "notes": "Current for 2026 demo.",
+        "verified_current": true
+      },
+      "applicability_review": {
+        "status": "reviewed",
+        "reviewer": "System Architect",
+        "reviewed_at": "2026-10-24T10:00:00Z",
+        "notes": "Applicable to all standard categories.",
+        "reviewed": true
+      },
+      "preview_approved": true
+    }
+  ]
+}

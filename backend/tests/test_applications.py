@@ -6,7 +6,7 @@ from app.main import app
 from app.db.base import Base
 from app.core.security import get_password_hash
 from app.models.enums import UserRole
-from app.models.models import User, Application, Institution
+from app.models.models import AuditEvent, User, Application, Institution
 from app.schemas.auth import UserCreate
 from app.db.session import get_db as real_get_db
 
@@ -90,6 +90,106 @@ def test_authenticated_creation_success():
     )
     assert response.status_code == 201
     assert response.json()["reference"] == "REF001"
+    assert response.json()["status"] == "submitted"
+
+    session = TestingSessionLocal()
+    created_application = session.query(Application).filter_by(reference="REF001").one()
+    assert created_application.institution_id == inst_id
+    event = session.query(AuditEvent).filter_by(
+        entity_type="application",
+        entity_id=str(created_application.id),
+        action="application.created",
+    ).one()
+    assert event.user_id is not None
+    session.close()
+
+def test_administrator_creation_is_unassigned_and_status_is_backend_controlled():
+    admin_email = create_test_user("admin@example.com", UserRole.ADMIN)
+    token = get_token(admin_email)
+    session = TestingSessionLocal()
+    institution = Institution(name="Administrator Institution")
+    session.add(institution)
+    session.commit()
+    institution_id = institution.id
+    session.close()
+
+    response = client.post(
+        "/api/applications/",
+        json={
+            "reference": "ADMIN-REF",
+            "entity_name": "Synthetic Organization",
+            "app_type": "Demonstration",
+            "institution_id": institution_id,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "submitted"
+    session = TestingSessionLocal()
+    created_application = session.query(Application).filter_by(reference="ADMIN-REF").one()
+    assert created_application.institution_id == institution_id
+    session.close()
+
+def test_reviewer_cannot_create_application():
+    reviewer_email = create_test_user("reviewer@example.com", UserRole.REVIEWER)
+    token = get_token(reviewer_email)
+
+    response = client.post(
+        "/api/applications/",
+        json={
+            "reference": "REVIEWER-REF",
+            "entity_name": "Synthetic Organization",
+            "app_type": "Demonstration",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+
+def test_application_creation_rejects_client_selected_status_and_institution():
+    admin_email = create_test_user("admin@example.com", UserRole.ADMIN)
+    token = get_token(admin_email)
+
+    response = client.post(
+        "/api/applications/",
+        json={
+            "reference": "CLIENT-CONTROLLED",
+            "entity_name": "Synthetic Organization",
+            "app_type": "Demonstration",
+            "status": "approved",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 422
+
+def test_institution_user_cannot_select_another_institution():
+    own = Institution(name="Own Institution")
+    other = Institution(name="Other Institution")
+    session = TestingSessionLocal()
+    session.add_all([own, other])
+    session.commit()
+    own_id, other_id = own.id, other.id
+    session.close()
+    user_email = create_test_user(
+        "cannot-select@example.com",
+        institution_id=own_id,
+    )
+    token = get_token(user_email)
+
+    response = client.post(
+        "/api/applications/",
+        json={
+            "reference": "OTHER-OWNER",
+            "entity_name": "Other Institution",
+            "app_type": "Demonstration",
+            "institution_id": other_id,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
 
 def test_list_applications_authenticated():
     # Setup: Create an institution and a user assigned to it
@@ -179,6 +279,39 @@ def test_update_application_success():
     )
     assert response.status_code == 200
     assert response.json()["entity_name"] == "Updated Corp"
+    session = TestingSessionLocal()
+    assert session.query(AuditEvent).filter_by(
+        action="application.updated",
+        entity_id=str(app_id),
+    ).count() == 1
+    session.close()
+
+def test_institution_user_cannot_change_application_status():
+    session = TestingSessionLocal()
+    inst = Institution(name="Status Institution")
+    session.add(inst)
+    session.commit()
+    inst_id = inst.id
+    application = Application(
+        reference="STATUS-REF",
+        entity_name="Status Entity",
+        app_type="Demonstration",
+        institution_id=inst_id,
+    )
+    session.add(application)
+    session.commit()
+    application_id = application.id
+    session.close()
+
+    user_email = create_test_user("status-user@example.com", institution_id=inst_id)
+    token = get_token(user_email)
+    response = client.patch(
+        f"/api/applications/{application_id}",
+        json={"status": "approved"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
 
 def test_invalid_payload_rejected():
     user_email = create_test_user()
@@ -190,3 +323,198 @@ def test_invalid_payload_rejected():
         headers={"Authorization": f"Bearer {token}"}
     )
     assert response.status_code == 422
+
+def test_duplicate_application_reference_rejected():
+    session = TestingSessionLocal()
+    institution = Institution(name="Duplicate Institution")
+    session.add(institution)
+    session.commit()
+    institution_id = institution.id
+    session.add(Application(
+        reference="DUPLICATE-REF",
+        entity_name="Existing",
+        app_type="Demonstration",
+        institution_id=institution_id,
+    ))
+    session.commit()
+    session.close()
+
+    user_email = create_test_user(
+        "duplicate-user@example.com",
+        institution_id=institution_id,
+    )
+    token = get_token(user_email)
+    response = client.post(
+        "/api/applications/",
+        json={
+            "reference": "DUPLICATE-REF",
+            "entity_name": "Another organization",
+            "app_type": "Demonstration",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 400
+
+
+def test_admin_institution_selection_requires_existing_institution():
+    admin_email = create_test_user("missing-institution-admin@example.com", UserRole.ADMIN)
+    token = get_token(admin_email)
+
+    response = client.post(
+        "/api/applications/",
+        json={
+            "reference": "MISSING-INSTITUTION",
+            "entity_name": "Synthetic Organization",
+            "app_type": "Demonstration",
+            "institution_id": 99999,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_institution_lifecycle_endpoints_are_admin_only():
+    institution_user = create_test_user(
+        "institution-route-user@example.com",
+        UserRole.INSTITUTION_USER,
+    )
+    user_headers = {"Authorization": f"Bearer {get_token(institution_user)}"}
+    assert client.get("/api/institutions/", headers=user_headers).status_code == 403
+    assert client.post(
+        "/api/institutions/",
+        headers=user_headers,
+        json={"name": "Unauthorized Institution"},
+    ).status_code == 403
+
+    admin = create_test_user("institution-route-admin@example.com", UserRole.ADMIN)
+    admin_headers = {"Authorization": f"Bearer {get_token(admin)}"}
+    created = client.post(
+        "/api/institutions/",
+        headers=admin_headers,
+        json={"name": "Admin Managed Institution"},
+    )
+    assert created.status_code == 201
+    assert created.json()["name"] == "Admin Managed Institution"
+    assert client.get("/api/institutions/", headers=admin_headers).json() == [created.json()]
+    duplicate = client.post(
+        "/api/institutions/",
+        headers=admin_headers,
+        json={"name": "Admin Managed Institution"},
+    )
+    assert duplicate.status_code == 409
+
+
+def test_admin_can_create_and_retrieve_application_for_selected_institution():
+    admin = create_test_user("lifecycle-admin@example.com", UserRole.ADMIN)
+    headers = {"Authorization": f"Bearer {get_token(admin)}"}
+    institution = client.post(
+        "/api/institutions/",
+        headers=headers,
+        json={"name": "Lifecycle Institution"},
+    )
+    assert institution.status_code == 201
+    institution_id = institution.json()["id"]
+
+    created = client.post(
+        "/api/applications/",
+        headers=headers,
+        json={
+            "reference": "LIFECYCLE-001",
+            "entity_name": "Lifecycle Institution",
+            "app_type": "New application",
+            "institution_id": institution_id,
+        },
+    )
+    assert created.status_code == 201
+    application_id = created.json()["id"]
+    assert created.json()["institution_id"] == institution_id
+
+    listing = client.get("/api/applications/", headers=headers)
+    assert any(item["id"] == application_id for item in listing.json())
+    details = client.get(f"/api/applications/{application_id}", headers=headers)
+    assert details.status_code == 200
+    assert details.json()["institution_id"] == institution_id
+    updated = client.patch(
+        f"/api/applications/{application_id}",
+        headers=headers,
+        json={"entity_name": "Updated Lifecycle Institution"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["entity_name"] == "Updated Lifecycle Institution"
+
+
+def test_audit_history_is_scoped_to_accessible_applications():
+    first_institution = Institution(name="Audit First Institution")
+    second_institution = Institution(name="Audit Second Institution")
+    session = TestingSessionLocal()
+    session.add_all([first_institution, second_institution])
+    session.commit()
+    first_id, second_id = first_institution.id, second_institution.id
+    session.close()
+
+    first_user = create_test_user(
+        "audit-first@example.com",
+        UserRole.INSTITUTION_USER,
+        first_id,
+    )
+    second_user = create_test_user(
+        "audit-second@example.com",
+        UserRole.INSTITUTION_USER,
+        second_id,
+    )
+    first_headers = {"Authorization": f"Bearer {get_token(first_user)}"}
+    second_headers = {"Authorization": f"Bearer {get_token(second_user)}"}
+    first_application = client.post(
+        "/api/applications/",
+        headers=first_headers,
+        json={
+            "reference": "AUDIT-FIRST",
+            "entity_name": "Audit First Institution",
+            "app_type": "Demo",
+        },
+    ).json()
+    second_application = client.post(
+        "/api/applications/",
+        headers=second_headers,
+        json={
+            "reference": "AUDIT-SECOND",
+            "entity_name": "Audit Second Institution",
+            "app_type": "Demo",
+        },
+    ).json()
+
+    first_events = client.get("/api/audit-events/", headers=first_headers)
+    assert first_events.status_code == 200
+    assert first_events.json()["total"] == 1
+    assert first_events.json()["items"][0]["entity_id"] == str(first_application["id"])
+    assert first_events.json()["items"][0]["metadata"] == {"reference": "AUDIT-FIRST"}
+    assert all(item["entity_id"] != str(second_application["id"]) for item in first_events.json()["items"])
+    assert client.get("/api/audit-events/").status_code == 401
+
+
+def test_audit_history_supports_bounded_pagination():
+    admin = create_test_user("audit-admin@example.com", UserRole.ADMIN)
+    headers = {"Authorization": f"Bearer {get_token(admin)}"}
+    institution = Institution(name="Audit Pagination Institution")
+    session = TestingSessionLocal()
+    session.add(institution)
+    session.commit()
+    institution_id = institution.id
+    session.close()
+    client.post(
+        "/api/applications/",
+        headers=headers,
+        json={
+            "reference": "AUDIT-PAGE-1",
+            "entity_name": "Audit Pagination Institution",
+            "app_type": "Demo",
+            "institution_id": institution_id,
+        },
+    )
+    response = client.get("/api/audit-events/?limit=1&offset=0", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["limit"] == 1
+    assert len(response.json()["items"]) == 1
+    assert response.json()["total"] == 1
+    assert client.get("/api/audit-events/?limit=201", headers=headers).status_code == 422

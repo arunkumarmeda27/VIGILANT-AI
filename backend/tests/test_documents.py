@@ -1,11 +1,12 @@
 import hashlib
+import json
 from io import BytesIO
 
 import fitz
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -17,6 +18,7 @@ from app.main import app
 from app.models.enums import UserRole
 from app.models.models import (
     Application,
+    AuditEvent,
     ComplianceAssessment,
     ComplianceRule,
     Document,
@@ -146,6 +148,41 @@ def process(application_id, document_id, headers):
     )
 
 
+def validate(application_id, document_id, headers):
+    return client.post(
+        f"/api/applications/{application_id}/documents/{document_id}/validate",
+        headers=headers,
+    )
+
+
+def inspect_integrity(application_id, document_id, headers):
+    return client.get(
+        f"/api/applications/{application_id}/documents/{document_id}/integrity-preview",
+        headers=headers,
+    )
+
+
+def create_processed_document(
+    test_database,
+    email,
+    reference,
+    content=None,
+):
+    if content is None:
+        content = make_text_pdf(
+            "Synthetic processed document with enough searchable text for extraction."
+        )
+    institution_id = create_institution(test_database, f"{reference} institution")
+    create_user(test_database, email, UserRole.INSTITUTION_USER, institution_id)
+    application_id = create_application(test_database, reference, institution_id)
+    headers = login(email)
+    uploaded = upload(application_id, headers, content=content)
+    assert uploaded.status_code == 201
+    processed = process(application_id, uploaded.json()["id"], headers)
+    assert processed.status_code == 200
+    return application_id, uploaded.json()["id"], headers
+
+
 def test_pdf_upload_persists_metadata_and_hash(test_database):
     institution_id = create_institution(test_database, "Upload institution")
     create_user(test_database, "uploader@example.com", UserRole.INSTITUTION_USER, institution_id)
@@ -175,6 +212,77 @@ def test_pdf_upload_persists_metadata_and_hash(test_database):
         assert document.sha256 == result["sha256"]
         assert document.file_size == len(PDF_CONTENT)
         assert document.storage_key == stored_files[0].name
+        audit = db.query(AuditEvent).filter_by(
+            action="document.uploaded",
+            entity_id=str(document.id),
+        ).one()
+        assert audit.user_id is not None
+        assert "sha256" not in audit.audit_metadata
+
+
+def test_integrity_preview_detects_identical_files_only_within_application(test_database):
+    institution_id = create_institution(test_database, "Integrity institution")
+    create_user(test_database, "integrity@example.com", UserRole.INSTITUTION_USER, institution_id)
+    application_id = create_application(test_database, "INTEGRITY-1", institution_id)
+    headers = login("integrity@example.com")
+    first = upload(application_id, headers, filename="first.pdf", content=PDF_CONTENT)
+    second = upload(application_id, headers, filename="second.pdf", content=PDF_CONTENT)
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+    response = inspect_integrity(application_id, second.json()["id"], headers)
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["duplicate_file_check"]["status"] == "duplicate"
+    assert result["duplicate_file_check"]["matches"] == [{
+        "document_id": first.json()["id"],
+        "original_filename": "first.pdf",
+    }]
+    assert result["authenticity_status"] == "not_assessed"
+    assert result["issuer_verification"] == "not_performed"
+    assert "does not establish" in result["limitations"][1]
+
+
+def test_integrity_preview_reports_pdf_metadata_as_user_controlled(test_database):
+    institution_id = create_institution(test_database, "Metadata institution")
+    create_user(test_database, "metadata@example.com", UserRole.INSTITUTION_USER, institution_id)
+    application_id = create_application(test_database, "METADATA-1", institution_id)
+    headers = login("metadata@example.com")
+    pdf = fitz.open()
+    page = pdf.new_page()
+    page.insert_text((72, 72), "Synthetic test PDF with enough content to parse safely.")
+    pdf.set_metadata({"author": "Example User", "title": "Synthetic only"})
+    content = pdf.tobytes()
+    pdf.close()
+    uploaded = upload(application_id, headers, content=content)
+    assert uploaded.status_code == 201
+
+    response = inspect_integrity(application_id, uploaded.json()["id"], headers)
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["pdf_structure_check"]["status"] == "readable"
+    assert result["metadata_check"]["status"] == "present"
+    assert "user-controlled" in result["metadata_check"]["explanation"]
+    assert result["authenticity_status"] == "not_assessed"
+
+
+def test_integrity_preview_denies_unauthorized_application_and_document(test_database):
+    own_institution = create_institution(test_database, "Integrity own institution")
+    other_institution = create_institution(test_database, "Integrity other institution")
+    create_user(test_database, "integrity-owner@example.com", UserRole.INSTITUTION_USER, own_institution)
+    create_user(test_database, "integrity-other@example.com", UserRole.INSTITUTION_USER, other_institution)
+    own_application = create_application(test_database, "INTEGRITY-OWN", own_institution)
+    other_application = create_application(test_database, "INTEGRITY-OTHER", other_institution)
+    owner_headers = login("integrity-owner@example.com")
+    other_headers = login("integrity-other@example.com")
+    foreign_document = upload(other_application, other_headers).json()["id"]
+
+    assert inspect_integrity(other_application, foreign_document, owner_headers).status_code == 404
+    assert inspect_integrity(own_application, foreign_document, owner_headers).status_code == 404
+    assert inspect_integrity(own_application, 99999, owner_headers).status_code == 404
+    assert inspect_integrity(own_application, 1, {}).status_code == 401
 
 
 def test_non_pdf_rejected(test_database):
@@ -390,6 +498,202 @@ def test_process_text_pdf_extracts_fields_with_page_evidence(test_database):
         assert document.processing_status == "completed"
         assert document.processing_result["fields"]["certificate_number"]["page"] == 1
         assert document.processed_at is not None
+        audit = db.query(AuditEvent).filter_by(
+            action="document.processed",
+            entity_id=str(document.id),
+        ).one()
+        assert "pages_processed" in audit.audit_metadata
+
+    audit_history = client.get("/api/audit-events/", headers=login("processor@example.com"))
+    assert audit_history.status_code == 200
+    actions = {event["action"] for event in audit_history.json()["items"]}
+    assert {"document.uploaded", "document.processed"}.issubset(actions)
+
+
+def test_validation_preview_returns_separate_evidence_without_database_writes(test_database):
+    application_id, document_id, headers = create_processed_document(
+        test_database,
+        "validation-preview@example.com",
+        "VALIDATE-1",
+        make_text_pdf(
+            "Institution Name: Example Institute\n"
+            "Certificate No: FS-2026-001"
+        ),
+    )
+    engine = test_database.kw["bind"]
+    statements = []
+
+    def collect_statement(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE", "REPLACE")):
+            statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", collect_statement)
+    try:
+        response = validate(application_id, document_id, headers)
+    finally:
+        event.remove(engine, "before_cursor_execute", collect_statement)
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["application_id"] == application_id
+    assert result["document_id"] == document_id
+    assert result["application_scope_status"] == "unknown"
+    assert result["overall_status"] == "unknown"
+    assert result["document_evidence"]["processing_status"] == "completed"
+    assert result["document_evidence"]["fields"]["institution_name"] == {
+        "value": "Example Institute",
+        "page": 1,
+        "evidence": "Institution Name: Example Institute",
+        "confidence": None,
+        "status": "extracted",
+        "verification_status": "unverified",
+    }
+    assert {rule["rule_id"] for rule in result["candidate_rules"]} == {
+        "DOCUMENT-0004",
+        "DOCUMENT-0012",
+        "DOCUMENT-0021",
+        "INFRASTRUCTURE-0002",
+    }
+    for candidate in result["candidate_rules"]:
+        assert candidate["preview_approved"] is False
+        assert candidate["eligibility"] == "unknown"
+        assert candidate["source_mapping_review"]["status"] in {
+            "verified",
+            "needs_correction",
+        }
+        assert candidate["currentness_review"]["status"] == "not_reviewed"
+        assert candidate["applicability_review"]["status"] == "unknown"
+        assert candidate["evidence"]["source"]["printed_page"] > 0
+        assert candidate["evidence"]["source"]["pdf_page"] > 0
+    assert all(check["status"] == "unknown" for check in result["checks"])
+    assert statements == []
+    encoded = json.dumps(result).casefold()
+    assert "authenticity" in encoded
+    assert "compliance" in encoded
+    assert not any(phrase in encoded for phrase in ('"authentic": true', '"compliant": true', '"fraud": true'))
+    assert "expiry" in encoded
+
+
+def test_validation_preview_requires_authentication(test_database):
+    institution_id = create_institution(test_database, "Unauth validation institution")
+    application_id = create_application(test_database, "VALIDATE-UNAUTH", institution_id)
+
+    response = validate(application_id, 1, {})
+
+    assert response.status_code == 401
+
+
+def test_validation_preview_rejects_unprocessed_document(test_database):
+    institution_id = create_institution(test_database, "Pending validation institution")
+    create_user(test_database, "pending-validation@example.com", UserRole.INSTITUTION_USER, institution_id)
+    application_id = create_application(test_database, "VALIDATE-PENDING", institution_id)
+    headers = login("pending-validation@example.com")
+    uploaded = upload(application_id, headers)
+
+    response = validate(application_id, uploaded.json()["id"], headers)
+
+    assert response.status_code == 409
+
+
+def test_validation_preview_returns_not_found_for_missing_document(test_database):
+    institution_id = create_institution(test_database, "Missing validation institution")
+    create_user(test_database, "missing-validation@example.com", UserRole.INSTITUTION_USER, institution_id)
+    application_id = create_application(test_database, "VALIDATE-MISSING", institution_id)
+
+    response = validate(
+        application_id,
+        99999,
+        login("missing-validation@example.com"),
+    )
+
+    assert response.status_code == 404
+
+
+def test_validation_preview_denies_unauthorized_application_and_foreign_document(
+    test_database,
+):
+    first_institution = create_institution(test_database, "First validation institution")
+    second_institution = create_institution(test_database, "Second validation institution")
+    create_user(
+        test_database,
+        "first-validation@example.com",
+        UserRole.INSTITUTION_USER,
+        first_institution,
+    )
+    create_user(
+        test_database,
+        "second-validation@example.com",
+        UserRole.INSTITUTION_USER,
+        second_institution,
+    )
+    first_application = create_application(
+        test_database,
+        "VALIDATE-FIRST",
+        first_institution,
+    )
+    second_application = create_application(
+        test_database,
+        "VALIDATE-SECOND",
+        second_institution,
+    )
+    first_headers = login("first-validation@example.com")
+    second_headers = login("second-validation@example.com")
+    first_document = upload(first_application, first_headers).json()["id"]
+    second_document = upload(second_application, second_headers).json()["id"]
+
+    unauthorized_application = validate(
+        second_application,
+        second_document,
+        first_headers,
+    )
+    foreign_document = validate(
+        first_application,
+        second_document,
+        first_headers,
+    )
+
+    assert unauthorized_application.status_code == 404
+    assert foreign_document.status_code == 404
+
+
+def test_validation_preview_marks_ocr_fields_unverified(test_database):
+    application_id, document_id, headers = create_processed_document(
+        test_database,
+        "ocr-validation@example.com",
+        "VALIDATE-OCR",
+    )
+    with test_database() as db:
+        document = db.query(Document).filter_by(id=document_id).one()
+        document.processing_result = {
+            "processing_status": "completed",
+            "extraction_method": "ocr",
+            "pages_processed": 1,
+            "fields": {
+                "certificate_number": {
+                    "value": "OCR-001",
+                    "page": 1,
+                    "evidence": "Certificate No: OCR-001",
+                    "confidence": 0.94,
+                    "status": "extracted",
+                }
+            },
+            "warnings": [],
+        }
+        db.commit()
+
+    response = validate(application_id, document_id, headers)
+
+    assert response.status_code == 200
+    result = response.json()
+    evidence = result["document_evidence"]
+    assert evidence["extraction_method"] == "ocr"
+    assert evidence["fields"]["certificate_number"]["value"] == "OCR-001"
+    assert evidence["fields"]["certificate_number"]["confidence"] == 0.94
+    assert evidence["fields"]["certificate_number"]["verification_status"] == "unverified"
+    assert not any(
+        claim in json.dumps(result).casefold()
+        for claim in ('"authentic": true', '"compliant": true', '"fraud": true')
+    )
 
 
 def test_completed_processing_results_are_cached(test_database, monkeypatch):

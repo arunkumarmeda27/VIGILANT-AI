@@ -146,3 +146,37 @@ class AuditEvent(Base):
     entity_id: Mapped[str] = mapped_column(String(100))
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     audit_metadata: Mapped[Optional[str]] = mapped_column(Text) # JSON string of metadata
+
+class ConsistencyRun(Base, TimestampMixin):
+    __tablename__ = "consistency_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    application_id: Mapped[int] = mapped_column(ForeignKey("applications.id"), index=True)
+    user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), index=True, nullable=True)
+    status: Mapped[str] = mapped_column(String(50), default="completed") # completed, failed
+    comparisons_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    application: Mapped["Application"] = relationship("Application")
+    results: Mapped[List["DocumentConsistencyResult"]] = relationship("DocumentConsistencyResult", back_populates="run", cascade="all, delete-orphan")
+
+class DocumentConsistencyResult(Base, TimestampMixin):
+    __tablename__ = "document_consistency_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("consistency_runs.id"), index=True)
+    application_id: Mapped[int] = mapped_column(ForeignKey("applications.id"), index=True)
+    field: Mapped[str] = mapped_column(String(100))
+    category: Mapped[str] = mapped_column(String(50))
+    val1: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    val2: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    norm1: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    norm2: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    doc1_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
+    doc2_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
+    explanation: Mapped[str] = mapped_column(Text)
+    human_review_recommended: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    run: Mapped["ConsistencyRun"] = relationship("ConsistencyRun", back_populates="results")
+    application: Mapped["Application"] = relationship("Application")
+    doc1: Mapped["Document"] = relationship("Document", foreign_keys="[DocumentConsistencyResult.doc1_id]")
+    doc2: Mapped["Document"] = relationship("Document", foreign_keys="[DocumentConsistencyResult.doc2_id]")
