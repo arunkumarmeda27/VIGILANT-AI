@@ -186,3 +186,13 @@ input:not([type=checkbox]):not([type=radio]):focus,select:focus,textarea:focus{b
   th,td{padding:5px!important;border-color:#aaa!important}
   a{color:#111!important;text-decoration:none!important}
 }
+.audit-event-details{margin-top:8px}
+.audit-event-details summary{width:max-content;color:var(--teal-dark);font-size:11px;font-weight:650;cursor:pointer}
+.report-assessment-list,.report-audit-list{display:grid;gap:9px;margin:10px 0 20px}
+.report-assessment,.report-audit-event{display:grid;gap:7px;padding:13px 15px;border:1px solid var(--line);border-radius:9px;background:#fff}
+.report-assessment>div{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.report-assessment p{margin:0;line-height:1.5}
+.report-assessment small,.report-audit-event small,.report-audit-event span{color:var(--muted);font-size:11px}
+.report-audit-event{grid-template-columns:minmax(0,1fr) auto;align-items:center}
+.report-audit-event small{grid-column:1/-1}
+@media(max-width:560px){.report-audit-event{grid-template-columns:1fr}.report-audit-event small{grid-column:auto}}

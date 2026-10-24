@@ -356,6 +356,25 @@ function Shell({ title, children, liveData = false }: { title: string; children:
 
 function Heading({ title, text }: { title: string; text: string }) { return <div className="section-heading"><div><h2>{title}</h2><p>{text}</p></div></div> }
 function Empty({ text }: { text: string }) { return <div className="empty"><XCircle size={28} /><h3>Nothing to show</h3><p>{text}</p></div> }
+function readableAuditAction(action: string) {
+  const labels: Record<string, string> = {
+    'application.created': 'Application created',
+    'application.updated': 'Application details changed',
+    'application.validate_all': 'Regulatory validation run',
+    'application.validate_consistency': 'Cross-document comparison run',
+    'application.checklist_validated': 'Document checklist run',
+    'document.uploaded': 'Document uploaded',
+    'document.duplicate_detected': 'Possible identical file detected',
+    'document.processed': 'Document processing completed',
+    'document.processing_failed': 'Document processing failed',
+    'document.integrity_checked': 'Document integrity checks run',
+    'compliance_assessment.reviewer_assigned': 'Assessment reviewer assigned',
+    'compliance_assessment.review_recorded': 'Human assessment decision recorded',
+    'finding.review_recorded': 'Finding review recorded',
+    'institution.created': 'Institution created',
+  };
+  return labels[action] || action.replaceAll('.', ' · ').replaceAll('_', ' ');
+}
 function AppTable({ rows }: { rows: App[] }) { return <div className="table-wrap"><table><thead><tr><th>Application</th><th>Institution</th><th>Category</th><th>Completeness</th><th>Unresolved</th><th>Reviewer</th><th>Next action</th><th>Status</th></tr></thead><tbody>{rows.map(a => { const missing = a.documents.filter(d => d.status === 'Not Submitted').length; return <tr key={a.id}><td><Link className="table-link" to={`/applications/${a.id}`}>{a.id}</Link></td><td>{a.institution}</td><td>{a.category}</td><td>{missing ? `${missing} missing` : 'Received'}</td><td>{a.findings.filter(f => f.status !== 'Resolved').length}</td><td>{a.reviewer}</td><td>{a.nextAction}</td><td><Tag>{a.status}</Tag></td></tr> })}</tbody></table></div> }
 
 function Home() { return <><header className="public-header"><Brand /><div className="header-actions"><Link className="text-link" to="/login">Sign in</Link><Link className="button primary" to="/dashboard">Open dashboard <ArrowRight size={16} /></Link></div></header><main><section className="hero"><div><p className="eyebrow">SIH26261 · evidence-led review</p><h1>Application validation that keeps people in the decision loop.</h1><p className="lede">VIGILANT AI is a frontend prototype for reviewing institutional application evidence, comparing documents, and organising manual scrutiny.</p><Link className="button primary" to="/dashboard">Open verification workspace <ArrowRight size={16} /></Link></div><div className="hero-panel"><p className="eyebrow">Simulated finding</p><h3>Registration mismatch</h3><p>Source-linked comparison and a recommended human action, never an automatic decision.</p></div></section></main></> }
@@ -412,7 +431,7 @@ function Dashboard() {
     ['Submitted', applications.filter(item => item.status === 'submitted').length, '/applications?status=submitted'],
     ['Documents uploaded', documents.length, '/verification'],
     ['Documents processed', documents.filter(item => item.processing_status === 'completed').length, '/verification'],
-    ['Accessible assessments', assessmentTotal, '/review-queue'],
+    ['Assessment records', assessmentTotal, '/review-queue'],
     ['Processing failures', documents.filter(item => item.processing_status === 'failed').length, '/verification'],
     ['Awaiting processing', documents.filter(item => item.processing_status === 'pending' || item.processing_status === 'processing').length, '/verification'],
     ['OCR unavailable', documents.filter(item => item.processing_status === 'ocr_unavailable').length, '/verification'],
@@ -455,7 +474,7 @@ function Dashboard() {
               <Heading title="Recent audit activity" text="Authorized events returned by the backend. Event visibility is scoped by your account." />
               {auditEvents.length ? <div className="overview-audit-list">{auditEvents.map(event => <article key={event.id}>
                 <span className="audit-marker" aria-hidden="true" />
-                <div><b>{event.action.replaceAll('.', ' · ').replaceAll('_', ' ')}</b><p>{event.entity_type} {event.entity_id} · {event.actor_name || 'Actor unavailable'}</p><time dateTime={event.timestamp}>{new Date(event.timestamp).toLocaleString()}</time></div>
+                <div><b>{readableAuditAction(event.action)}</b><p>{event.entity_type} {event.entity_id} · {event.actor_name || 'Actor unavailable'}</p><time dateTime={event.timestamp}>{new Date(event.timestamp).toLocaleString()}</time></div>
               </article>)}</div> : <p className="validation-meta">No audit activity is available to this account.</p>}
               <Link className="button secondary overview-link" to="/audit-trail">View audit history</Link>
             </section>
@@ -536,7 +555,7 @@ function AIEvidenceSearch() {
       <section className="content-section ai-search-panel">
         <Heading
           title="Search regulatory source evidence"
-          text="Ask a question to retrieve passages from the available handbook source."
+          text="Search indexed handbook text using ranked term matching. Results show source passages and citations; no regulatory conclusion is generated."
         />
         <div className="ai-examples" aria-label="Example questions">
           <span>Try an example</span>
@@ -1352,14 +1371,15 @@ function GlobalAudit() {
             <div className="audit-event-list">
               {page.items.map(event => (
                 <article className="audit-event-card" key={event.id}>
-                  <div><b>{event.action}</b><Tag>{event.entity_type}</Tag></div>
+                  <div><b>{readableAuditAction(event.action)}</b><Tag>{event.entity_type}</Tag></div>
                   <p>Entity ID {event.entity_id} · {event.actor_name || `User ${event.user_id ?? 'unavailable'}`}</p>
                   <time dateTime={event.timestamp}>{new Date(event.timestamp).toLocaleString()}</time>
-                  {Object.keys(event.metadata).length > 0 && (
+                  {Object.keys(event.metadata).length > 0 && <details className="audit-event-details">
+                    <summary>Event metadata</summary>
                     <dl className="audit-event-metadata">
                       {Object.entries(event.metadata).map(([key, value]) => <div key={key}><dt>{key.replaceAll('_', ' ')}</dt><dd>{Array.isArray(value) ? value.join(', ') : value === null ? '—' : String(value)}</dd></div>)}
                     </dl>
-                  )}
+                  </details>}
                 </article>
               ))}
             </div>
@@ -1406,11 +1426,11 @@ function AssessmentWorkspace({ title }: { title: string }) {
   return (
     <Shell title={title} liveData>
       <section className="content-section">
-        <Heading title={title} text="Only persisted reviewer assessments returned by the authorized backend are displayed. Candidate registry rules are not treated as assessments." />
+        <Heading title={title} text="Persisted assessment snapshots are shown newest first. Changed results remain as history; repeated identical validation results do not create duplicate snapshots. Candidate registry rules are not treated as assessments." />
         {error && <div className="validation-error" role="alert"><AlertTriangle size={18} aria-hidden="true" />{error}</div>}
         {loading ? <p role="status">Loading authorized assessments…</p> : page?.items.length ? (
           <>
-            <div className="table-wrap"><table><thead><tr><th>Application</th><th>Institution</th><th>Rule</th><th>Category</th><th>Recorded status</th><th>Reviewer</th><th>Assessed</th><th>Explanation</th><th>Review</th></tr></thead>
+            <div className="table-wrap" role="region" aria-label={`${title} table; scroll horizontally for more columns`} tabIndex={0}><table><thead><tr><th>Application</th><th>Institution</th><th>Rule</th><th>Category</th><th>Recorded status</th><th>Reviewer</th><th>Assessed</th><th>Explanation</th><th>Review</th></tr></thead>
               <tbody>{page.items.map(item => <tr key={item.id}>
                 <td><Link className="table-link" to={`/applications/${item.application_id}`}>{item.application_reference}</Link></td>
                 <td>{item.entity_name}</td><td>{item.rule_code} · {item.rule_title}</td><td>{item.category}</td><td><Tag>{item.status}</Tag></td><td>{item.reviewer_name || 'Unassigned'}</td><td>{new Date(item.assessed_at).toLocaleString()}</td><td>{item.explanation}</td>
@@ -2027,7 +2047,7 @@ function Reports() {
               <div>
                 <h3>{application.reference} · {application.entity_name}</h3>
                 <p>Database ID {application.id} · {application.app_type} · Status: {application.status || 'Unknown'}</p>
-                <p>Persisted documents: {documentCounts[application.id] ?? 0} · Persisted assessments: {assessmentCounts[application.id] ?? 0}</p>
+                <p>Persisted documents: {documentCounts[application.id] ?? 0} · Assessment records: {assessmentCounts[application.id] ?? 0}</p>
                 <small>These are record counts only. They do not indicate authenticity, completeness, or regulatory compliance.</small>
               </div>
               <Link className="button secondary" to={`/reports/${application.id}`}>Open record summary</Link>
@@ -2120,7 +2140,11 @@ function PersistedReport() {
             </> : <small>No persisted extraction result is available for this document.</small>}
           </section>) : <p>No documents are currently attached.</p>}
           <h3>Persisted automated assessments</h3>
-          {assessments.length ? assessments.map(item => <p key={item.id}><b>{item.rule_code} · {item.rule_title}</b> — {item.status}. {item.explanation} Reviewer: {item.reviewer_name || 'Unassigned'}.</p>) : <p>No persisted assessments are available for this application.</p>}
+          {assessments.length ? <div className="report-assessment-list">{assessments.map(item => <section className="report-assessment" key={item.id}>
+            <div><b>{item.rule_code} · {item.rule_title}</b><Tag>{item.status}</Tag></div>
+            <p>{item.explanation}</p>
+            <small>Assessment record {item.id} · Snapshot recorded {new Date(item.assessed_at).toLocaleString()} · Reviewer: {item.reviewer_name || 'Unassigned'}</small>
+          </section>)}</div> : <p>No persisted assessments are available for this application.</p>}
           <h3>Cross-document validation history</h3>
           {runs.length ? runs.map(run => <section className="report-evidence" key={run.id}><p><b>Run {run.id}</b> · {run.status} · {run.comparisons_count} comparison(s) · {new Date(run.created_at).toLocaleString()}</p>
             {run.results.length ? run.results.map(result => <p key={result.id}><b>{result.category} · {result.field}:</b> {result.doc1_filename}: {result.val1 ?? 'No value'} ↔ {result.doc2_filename}: {result.val2 ?? 'No value'}. {result.explanation}</p>) : <small>No comparable fields were recorded.</small>}
@@ -2130,7 +2154,10 @@ function PersistedReport() {
             {finding.reviews.map(review => <p key={review.id}>Human review: {review.outcome.replaceAll('_', ' ')} · {review.reviewer_name} · {new Date(review.created_at).toLocaleString()}{review.note ? ` · ${review.note}` : ''}</p>)}
           </section>) : <p>No findings are stored. Their absence does not imply compliance.</p>}
           <h3>Authorized audit event references</h3>
-          {auditEvents.length ? auditEvents.map(event => <p key={event.id}>Event {event.id} · {event.action} · {event.actor_name || 'Actor unavailable'} · {new Date(event.timestamp).toLocaleString()}</p>) : <p>No authorized audit events are available for this application.</p>}
+          {auditEvents.length ? <div className="report-audit-list">{auditEvents.map(event => <section className="report-audit-event" key={event.id}>
+            <b>{readableAuditAction(event.action)}</b><span>{event.entity_type} {event.entity_id}</span>
+            <small>Event {event.id} · {event.actor_name || 'Actor unavailable'} · {new Date(event.timestamp).toLocaleString()}</small>
+          </section>)}</div> : <p>No authorized audit events are available for this application.</p>}
           <p className="validation-disclaimer">Automated assessments are not human decisions. This report does not establish document authenticity, application completeness, fraud, or institutional compliance. Synthetic and unapproved rules remain advisory; final decisions belong to authorized human reviewers.</p>
           <footer className="report-footer"><span>VIGILANT AI · SIH26261 prototype</span><span>Generated {generatedAt} · Application {application.reference}</span></footer>
           <button className="button primary no-print" onClick={() => window.print()}>Print record summary</button>

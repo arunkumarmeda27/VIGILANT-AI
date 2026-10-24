@@ -6,7 +6,7 @@ from app.main import app
 from app.db.base import Base
 from app.core.security import get_password_hash
 from app.models.enums import UserRole
-from app.models.models import AuditEvent, User, Application, Institution
+from app.models.models import AuditEvent, User, Application, Institution, ComplianceAssessment, ComplianceRule
 from app.schemas.auth import UserCreate
 from app.db.session import get_db as real_get_db
 
@@ -254,7 +254,6 @@ def test_get_application_not_found():
     assert response.status_code == 404
 
 def test_update_application_success():
-    # Setup: Create an institution and a user assigned to it
     session = TestingSessionLocal()
     inst = Institution(name="Test Institution")
     session.add(inst)
@@ -264,7 +263,6 @@ def test_update_application_success():
 
     user_email = create_test_user(institution_id=inst_id)
     token = get_token(user_email)
-
     session = TestingSessionLocal()
     app1 = Application(reference="R1", entity_name="E1", app_type="T1", institution_id=inst_id)
     session.add(app1)
@@ -275,17 +273,87 @@ def test_update_application_success():
     response = client.patch(
         f"/api/applications/{app_id}",
         json={"entity_name": "Updated Corp"},
-        headers={"Authorization": f"Bearer {token}"}
+        headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 200
     assert response.json()["entity_name"] == "Updated Corp"
+    with TestingSessionLocal() as session:
+        assert session.query(AuditEvent).filter_by(
+            action="application.updated", entity_id=str(app_id)
+        ).count() == 1
+
+
+def test_unchanged_application_update_does_not_create_a_changed_fields_audit_event():
     session = TestingSessionLocal()
-    assert session.query(AuditEvent).filter_by(
-        action="application.updated",
-        entity_id=str(app_id),
-    ).count() == 1
+    institution = Institution(name="Unchanged Update Institution")
+    session.add(institution)
+    session.commit()
+    application = Application(
+        reference="UNCHANGED-REF",
+        entity_name="Unchanged Entity",
+        app_type="Demonstration",
+        institution_id=institution.id,
+    )
+    session.add(application)
+    session.commit()
+    application_id = application.id
+    institution_id = institution.id
     session.close()
 
+    user_email = create_test_user("unchanged-update@example.com", institution_id=institution_id)
+    response = client.patch(
+        f"/api/applications/{application_id}",
+        json={"entity_name": "Unchanged Entity"},
+        headers={"Authorization": f"Bearer {get_token(user_email)}"},
+    )
+    assert response.status_code == 200
+    with TestingSessionLocal() as session:
+        assert session.query(AuditEvent).filter_by(
+            action="application.updated", entity_id=str(application_id)
+        ).count() == 0
+
+
+def test_reviewer_cannot_update_application_fields_other_than_status():
+    reviewer_email = create_test_user("restricted-reviewer@example.com", UserRole.REVIEWER)
+    with TestingSessionLocal() as session:
+        reviewer_id = session.query(User.id).filter_by(email=reviewer_email).scalar()
+    session = TestingSessionLocal()
+    institution = Institution(name="Reviewer Update Institution")
+    session.add(institution)
+    session.flush()
+    application = Application(
+        reference="REVIEWER-UPDATE-REF",
+        entity_name="Original Entity",
+        app_type="Demonstration",
+        institution_id=institution.id,
+    )
+    session.add(application)
+    rule = ComplianceRule(
+        rule_code="REVIEWER-UPDATE-TEST",
+        title="Test rule",
+        description="Test only",
+        category="test",
+    )
+    session.add(rule)
+    session.flush()
+    session.add(ComplianceAssessment(
+        application_id=application.id,
+        rule_id=rule.id,
+        status="Not evaluated",
+        explanation="Test assignment",
+        reviewer_id=reviewer_id,
+    ))
+    session.commit()
+    application_id = application.id
+    session.close()
+
+    response = client.patch(
+        f"/api/applications/{application_id}",
+        json={"entity_name": "Attempted Change"},
+        headers={"Authorization": f"Bearer {get_token(reviewer_email)}"},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Reviewers can update application status only"
 def test_institution_user_cannot_change_application_status():
     session = TestingSessionLocal()
     inst = Institution(name="Status Institution")

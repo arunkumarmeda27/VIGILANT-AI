@@ -146,6 +146,35 @@ def test_validate_all_keeps_unapproved_rules_unevaluated():
     assert len(assessments) >= 2
     session.close()
 
+def test_repeated_validation_preserves_one_identical_snapshot_and_audit_history():
+    institution_id = create_institution()
+    user_email = create_test_user("repeat-validation@example.com", institution_id=institution_id)
+    token = get_token(user_email)
+    application_id = create_application(inst_id=institution_id)
+    create_processed_document(application_id, "fire_safety_certificate", {
+        "certificate_number": {"value": "CERT-REPEAT", "status": "extracted"},
+    })
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"/api/applications/{application_id}/validate-all"
+
+    first = client.post(url, headers=headers)
+    assert first.status_code == 200
+    with TestingSessionLocal() as session:
+        first_snapshot_count = session.query(ComplianceAssessment).filter_by(
+            application_id=application_id
+        ).count()
+        assert first_snapshot_count > 0
+
+    second = client.post(url, headers=headers)
+    assert second.status_code == 200
+    with TestingSessionLocal() as session:
+        assert session.query(ComplianceAssessment).filter_by(
+            application_id=application_id
+        ).count() == first_snapshot_count
+        assert session.query(AuditEvent).filter_by(
+            action="application.validate_all", entity_id=str(application_id)
+        ).count() == 2
+
 
 def test_validate_all_preserves_preexisting_assessments():
     inst_id = create_institution()

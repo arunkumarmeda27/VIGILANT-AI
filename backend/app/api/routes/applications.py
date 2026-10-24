@@ -769,32 +769,52 @@ def validate_application_all(
             db.add(db_rule)
             db.flush()
 
-        assessment = ComplianceAssessment(
-            application_id=application.id,
-            rule_id=db_rule.id,
-            status=r["status"],
-            explanation=r["explanation"],
-            reviewer_id=None
-        )
-        db.add(assessment)
+        # Keep changed assessment snapshots as history, but don't add the same
+        # result again on every validation click. Each attempted run is already
+        # represented by its append-only audit event below. This also preserves
+        # any reviewer assignment on an identical existing snapshot.
+        existing_snapshot = db.query(ComplianceAssessment.id).filter(
+            ComplianceAssessment.application_id == application.id,
+            ComplianceAssessment.rule_id == db_rule.id,
+            ComplianceAssessment.status == r["status"],
+            ComplianceAssessment.explanation == r["explanation"],
+        ).first()
+        if existing_snapshot is None:
+            db.add(ComplianceAssessment(
+                application_id=application.id,
+                rule_id=db_rule.id,
+                status=r["status"],
+                explanation=r["explanation"],
+                reviewer_id=None,
+            ))
 
+    findings_created = 0
     for f in findings_to_create:
-        finding = Finding(
+        existing_finding = db.query(Finding.id).filter(
+            Finding.application_id == application.id,
+            Finding.document_id == f["document_id"],
+            Finding.finding_type == f["finding_type"],
+            Finding.description == f["description"],
+            Finding.status == "open",
+        ).first()
+        if existing_finding is not None:
+            continue
+        db.add(Finding(
             application_id=application.id,
             document_id=f["document_id"],
             finding_type=f["finding_type"],
             severity=f["severity"],
             description=f["description"],
-            status="open"
-        )
-        db.add(finding)
+            status="open",
+        ))
+        findings_created += 1
 
     db.add(AuditEvent(
         user_id=current_user.id,
         action="application.validate_all",
         entity_type="application",
         entity_id=str(application.id),
-        audit_metadata=json.dumps({"rules_evaluated": len(results), "findings_created": len(findings_to_create)})
+        audit_metadata=json.dumps({"rules_evaluated": len(results), "findings_created": findings_created})
     ))
 
     db.commit()
@@ -802,7 +822,7 @@ def validate_application_all(
     return {
         "application_id": application.id,
         "results": results,
-        "findings_count": len(findings_to_create),
+        "findings_count": findings_created,
         "status": "completed"
     }
 
@@ -1337,18 +1357,23 @@ def update_application(
         )
     if current_user.role == UserRole.REVIEWER.value and set(update_data) - {"status"}:
         raise HTTPException(
-            status_code=status.HTTP_403_L_FORBIDDEN, detail="Reviewers can update application status only")
-    for field, value in update_data.items():
+            status_code=status.HTTP_403_FORBIDDEN, detail="Reviewers can update application status only")
+    changed_data = {
+        field: value
+        for field, value in update_data.items()
+        if getattr(app_obj, field) != value
+    }
+    for field, value in changed_data.items():
         setattr(app_obj, field, value)
 
-    if update_data:
+    if changed_data:
         db.add(
             AuditEvent(
                 user_id=current_user.id,
                 action="application.updated",
                 entity_type="application",
                 entity_id=str(app_obj.id),
-                audit_metadata=json.dumps({"changed_fields": sorted(update_data)}),
+                audit_metadata=json.dumps({"changed_fields": sorted(changed_data)}),
             )
         )
     db.commit()
