@@ -1,0 +1,268 @@
+ANNEXURE-3 
+Norms for Land and Built-up Area Requirements of the  
+Technical Institutions
+3.1						Land	Requirements	for	the	Technical	Institutions
+For establishing an Institution offering Diploma/UG/PG Level courses in technical Programmes, the built-up area 
+requirement will be calculated based on the approved intake and duration of the course per programme. The land 
+required for the same will be based on prevailing FSI/FAR norms applicable for that location as declared by the  
+respective competent authority to house the required built-up area as per norms. The same shall be applicable for the 
+Institutions to be established/ already established in Mega/Metro/Urban/Rural areas.
+For the Land area requirements, the following conditions need to be adhered:
+a. Institute shall have sufficient built up area to cover all the requirements of ALL the programs/ levels  
+conducted as per the provisions of Approval Process Handbook.
+b. The Built-up area requirements as specified in the Approval Process Handbook (which is in- force) are  
+adhered to.
+c. The Built-up area, achieved has to be approved by the concerned Development Authority as per the  
+latest Building Bye-Laws (Development Controls) in that City/Town. Copy of the approved Plan along  
+with the Completion Certificate/ Occupancy certificate issued by the concerned State Government  
+authority needs to be provided. In case of partial/ provisional Occupancy Certificate issued by the  
+State Government authority, the same shall be considered only for 2 consecutive Academic Years.
+d. Fire and life Safety Certificate from Fire Department of the concerned State Government authority is  
+to be taken before submitting the application at AICTE. 
+e. Additional Course(s)/Programme(s), in future can be allowed subject to the availability of Built-up  
+areas as per FSI (FAR). However, if the additional construction is to be undertaken in the existing  
+Building, then Structural Stability Certificate and Certificate of Safe Foundation to be provided by a  
+Structural Engineer having a Master’s Degree with specialization in Structural Engineering.
+f. The total Built-up area is to be calculated for the entire duration of the Course with mandatory prior  
+sanctions and approvals from Competent Authority for the entire proposal.
+g. The Land area required shall be in a maximum of THREE plots. The Academic, Instructional, Adminis  
+trative and Amenities area shall be in one plot. The distance between the plots shall not exceed 2 km.  
+The remaining Land shall only be utilized for sporting Infrastructure/ Hostel/ Staff accommodation  
+and related educational activities of the Institution. In such cases, adequate commutation facility  
+between the plots shall be provided for the students and staff members.
+h. Considering the hilly nature of Land in North Eastern States and the hilly regions of States such as  
+Himachal Pradesh, Uttarakhand and Jammu & Kashmir and Ladakh’s UT or any area in any State  
+declared as hilly by the concerned Government, Land shall be made available in 3 pieces which are  
+not away from each other by more than 2 km. In such cases, adequate commutation facility between  
+the plots shall be provided for the students and staff members.
+i. The institute shall provide ample space for play-ground (owned or hired) facilities for indoor and  
+outdoor sports for the students either in the Campus or through arrangements with other adjacent  
+Institutions, Corporation grounds, private facilities, etc.
+ 
+ 
+ 
+
+Approval Process Handbook 2024-2027
+87
+NOTE: 
+i.   Starting other educational Course(s)/ Institutions (Technical/Non-Technical) in the surplus Land/
+Built-up area arising out of the prevailing/ reduced norms of Land requirement is permissible.  
+Further such surplus Land shall be used as per the Land Use Certificate given to the Trust/ Society/  
+Company by the concerned authority, subject to such Course(s)/ Institution sharing their own  
+facilities to conduct such Programmes without sharing the essential facilities, such as Class Room,  
+Laboratory etc. with the already approved Technical Institution. However, Common Amenities such  
+as Administrative infrastructure, Canteen, Auditorium, Playground, Parking, etc. may be shared,   
+provided it caters to all the students of all the Programmes.
+ii. For Change of Site/ Location or to start new Programme/ Level in the existing Institutions, mortgage  
+of land is acceptable.
+iii. There is no separate Land required for existing Non-Technical Institutions offering Under Graduate/  
+Post Graduate Programme/Courses in Computer Application/Management. 
+3.2	 Minimum	Built-up	 Area	Requirements
+ a. The Institution area is divided into, Instructional area (INA, carpet area in m 2), Administrative  area  
+  (ADA, carpet area in m2), Amenities area (AMA, carpet area in m2).
+ b. Access and Circulation Area (ACA) is around 25% of Built-up Area.
+ c. Total Built-up area in m2 is equal to (INA+ADA+AMA) + (ACA).
+ d. In case of allied branches in Engineering and Technology, a maximum of 50% of Laboratories may  
+  be shared.
+ e. For Post Graduate Programmes, Administrative area of Under Graduate Programmes may be shared.
+ f. Institutions shall have the Barrier free environment and Sports facilities as specified in the 
+  Chapter VII of 
+ 
+                                                                3.2.1 Instructional Area
+Particulars Minimum Number of Rooms required Carpet Area in Sq. mper Room
+A. Engineering and Technology (Diploma/Under Graduate/ Post Graduate Degree/ Integrated/Dual 
+Degree) Institutions
+Class Rooms
+Total Number of Divisions per 
+year x Total Duration of course 
+in years x 0.5
+66(For a division of 60) 
+33(For a division of 30)
+Tutorial Rooms+ 25% of total Class Room 33
+Laboratory for First Year
+4 (which includes 2 Laboratories 
+for Basic sciences) : Up to an 
+intake of 600
+66
+Laboratory other than First Year 2 per Course per Year up to an intake of 180 per course 66
+Laboratory for Post Graduate 
+Courses
+1per Course 66
+1 Research Laboratory 66
+Workshop 1 (Up to an intake of 600) +1 for an intake of 601-1200 200
+Additional Laboratory/Workshop 
+for “X” Category Courses 1 200 (For UG) 150(For Diploma)
+CAD Centre/Drawing Hall#$ 1(Up to an intake of 600) +1 for an intake of 601-1200 132
+
+  
+Approval Process Handbook 2024-2027
+88
+Computer Centre 1(Up to an intake of 600) +1 for an intake of 601-1200 150
+Seminar Hall 1 132
+Library++ 1 400
+Language Laboratory+ 1 33
+ h For Courses having more than 3 Divisions, additional Laboratories equivalent to the required number on 
+pro rata basis for the said Courses shall be created.
+ h “X” Category Courses such as Mechanical, Production, Civil, Electrical, Chemical, Textile, Marine, 
+Aeronautical and Allied/Relevant Courses shall require an Additional Laboratory/ Workshop.
+ h Infrastructure Requirement shall be calculated on prorata basis for institutions having “Approved Intake” 
+greater than 1200.
+B. Planning (Under Graduate/ Post Graduate Degree/ Integrated Degree) Institution 
+(Up to an intake of 120)
+Class Rooms
+Total Number of Divisions per 
+year x Total Duration of course 
+in years x 0.5
+60 (For UG) 
+30 (For PG)
+Resource Centre 1 80
+Computer Laboratory (First Year) 1 60
+Studio (other than First Year) 1 per Course per Year 120
+Post Graduate Studio 2 60
+Model making and Carpentry 
+Workshop 1 120
+Art Court 1 100
+Multi-Purpose Hall 1 150
+Research Laboratory* 1 60
+Computer Centre 1 75
+Seminar Hall 1 per Under Graduate Institution 1321 per Diploma Institution 132
+Library++ 1 150
+Language Laboratory# 1 30
+C. Applied Arts and Crafts (Diploma/ Under Graduate/ Post Diploma/ Post Graduate Degree) Institution 
+(Up to an intake of 90)
+Class Rooms 1 Room per Division per Year 66 (For Diploma & UG) 33 (For PG)
+Tutorial Rooms+ 25% of total Class Room 33
+Workshop/Studio 1 per Course per Year 66
+Common Workshop/Studio 1 90
+Workshop/Studio(Post 
+Graduate Courses) 1 per specialization 66
+Studio/Display Room 1 132
+Craft Centre 1 66
+Computer Centre 1 75
+Theatre/Seminar Hall 1 100
+Library++ 1 150
+Language Laboratory+ 1 33
+
+Approval Process Handbook 2024-2027
+89
+D. Design (Diploma/ Under Graduate/ Post Graduate Degree) Institution(Up to an intake of 150)
+Class Rooms/Studio 1 per Division per Year 100 (For Diploma & UG) 66 (For PG)
+Tutorial Rooms** 1 per Year 33
+Laboratory/Workshop 1 per Division per Year 66
+Photography Laboratory 1 66
+Computer Laboratory 1 75
+Seminar Hall 1 100
+Library++ 1 150
+Language/Audio Visual 
+Laboratory 1 33
+E. Hotel Management and Catering Technology (Diploma/Under Graduate/Post Graduate Degree/ 
+Integrated Degree) Institution ( Up to an intake of 180)
+Class Rooms
+Total Number of Divisions per 
+year x Total Duration of course 
+in years x 0.5
+66 (For Diploma & UG) 
+33 (For PG)
+Tutorial Rooms** 25% of total Class Room 33
+Laboratory (Guest Room/House 
+Keeping/ Front Office/ Kitchen)for 
+First Year
+3 66
+Laboratory (Guest Room/ House 
+Keeping/ Front Office/ Kitchen)
+other than First Year
+2 per Course per Year 66
+Laboratory/ Guest Room for Post 
+Graduate Programme 1 per Specialization 66
+Kitchen with Dining Hall 1 132
+Restaurant 2 66
+Computer Centre 1 75
+Seminar Hall 1 132
+Library++ 1 150
+Language Laboratory 1 33
+F . Computer Applications UG/PG/ Integrated Degree Institution 
+(Up to an intake of 300)
+Class Rooms 1 per Division per Year 66
+Tutorial Rooms 25% of total Class Room 33
+Computer Laboratory* 1 66
+Computer Centre 1 150
+Seminar Hall 1 132
+Library++ 1 100
+Language Laboratory 1 33
+G. Management (UG/PG/ Integrated Degree) Institution 
+(Up to an intake of 360)
+Class Rooms 1 per Division per Year 66
+Tutorial Rooms 25% of total Class Room 33
+Computer Centre 1 150
+Language Laboratory (Applicable 
+only for UG) 1 33
+Seminar Hall 1 132
+Library++ 1 100
+Language Laboratory 1 33
+
+  
+Approval Process Handbook 2024-2027
+90
+Note:
+ 1. It is desirable that an institution shall possess carpet area of 1.1 Sq. m per student to be utilized for  
+  teaching and learning purpose (class rooms and tutorial rooms). (Ref: NBCC)
+ 2. Additional Laboratories to be created (if required) as per Curriculum of the concerned affiliating  
+  University.
+ 3. + Language Laboratory shall have a minimum of 20 Computers with appropriate Software.  
+  Additional  Number of Computers shall be increased on prorata basis for approved intake greater  
+  than 300 i.e. 0-300:20 Computers, 301-600:40 Computers, 601-900:60 Computers etc.
+ 4. ++ Additional Library area of 50 m2 per 60 Students beyond 420 “Approved Intake”.
+ 5. * Applicable only for Post Graduate Courses
+ 6. ** Not Applicable for Post Graduate Courses.
+ 7. $ Not applicable for DMLT.
+ 8. Diploma Laboratories, if shared with the Under Graduate Degree Courses shall be upgraded to meet  
+  requirements of the Under Graduate Curriculum.
+ 9. Under Graduate Laboratories, if shared with Post Graduate Courses shall be upgraded to meet  
+  requirements of Post Graduate Curriculum.
+ 10. The Institution shall have minimum one Smart Class Room/ Course with LCD projector, Smart Board,  
+  Internet Connection, etc.
+ 11. Seminar Hall shall have proper furnishing and equipment such as LCD projector, Smart Board, PA  
+  system etc. 
+ 12. Institutions shall have MOOCs Facility Centre and Innovation/ Fab Laboratory/ Idea Implementation  
+  Centre/ Tinkering Laboratory/ Innovation Centre.
+ 13. There are many nomenclatures common to Engineering Diploma and Applied Arts/ Crafts Diploma.  
+  Hence in all such multidisciplinary type of programs, actual requirements shall be evaluated by  
+  respective Boards.
+3.3	 Administrative	 Area	(Carpet	Area)	in	m2
+ An institution should possess a total administrative area of minimum 750 sq. m. for an approved intake up 
+ to 300. The particulars under administrative area includes Principal/Director Room, Board room (30 seater), 
+ Office all inclusive, Cabin for head of department and department office, Faculty cabins, Meeting room (15 
+ seater), Central store, Maintenance room, Security cabin, Housekeeping room, Pantry for staff, Placement  
+ office etc. It is desirable that for an Institution having more than one program, the area for office all- 
+ inclusive shall be doubled. 
+ 
+ 
+3.4	 Amenities	 Area	(Carpet	Area)	in	m2
+ 
+An institution should possess a total amenities area of minimum 500 sq. m. for an approved intake up 
+to 300. The particulars under amenities area includes Toilets (adequate number for ladies and gents), 
+boys common room, girls common room, cafeteria, stationary store and reprography, first aid cum sick 
+room. In addition to the same, it is also desired that Institutions shall possess additional amenities area 
+such as guest house, sports club, auditorium, hostels (boys and girls), faculty and staff quarter’s etc.  
+ 
+
+Approval Process Handbook 2024-2027
+91
+NOTE: 1. Institutions shall satisfy the total of Amenities & Administrative area as mentioned above. 
+  However, the individual areas  for each particular mentioned above shall be decided by  
+  the Institution as per the standard norms followed (refer NBCC).
+ 
+ 2. Adequate Number of Toilets shall be provided for Ladies and Gents based on the total students and  
+  staff members available in the campus and the same shall be maintained hygienically.
+ 3. Access and Circulation area (ACA) of 25% of sum of Instructional, Administrative and Amenities  
+  area is  desired for covering common walkways, staircases and entrance lobby.
+3.5	 Land	Requirement	
+ 
+Land Requirement in Mega & Metro, Urban and Rural areas shall be decided based on FSI / FAR norms 
+applicable to the respective areas under the concerned Municipal Corporation or the Local Authority that 
+approves the Building Plans or the State Government / UT. However, the Institutions may refer the previous 
+Approval Process Hand Book for more details.
+
+  
+Approval Process Handbook 2024-2027
+92
