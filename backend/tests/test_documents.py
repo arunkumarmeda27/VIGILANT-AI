@@ -28,6 +28,7 @@ from app.models.models import (
     User,
 )
 from app.services import document_processing
+from app.services.checklists import parse_unambiguous_date
 from app.api.routes import applications as application_routes
 
 
@@ -617,6 +618,86 @@ def test_process_text_pdf_extracts_fields_with_page_evidence(test_database):
     assert audit_history.status_code == 200
     actions = {event["action"] for event in audit_history.json()["items"]}
     assert {"document.uploaded", "document.processed"}.issubset(actions)
+
+
+def test_document_classification_uses_content_and_keeps_uncertain_type_unclassified(test_database):
+    institution_id = create_institution(test_database, "Classification institution")
+    create_user(test_database, "classifier@example.com", UserRole.INSTITUTION_USER, institution_id)
+    application_id = create_application(test_database, "CLASSIFY-1", institution_id)
+    headers = login("classifier@example.com")
+
+    certificate = upload(
+        application_id,
+        headers,
+        content=make_text_pdf("Fire Safety Certificate\nIssued by Fire Department"),
+    )
+    assert certificate.status_code == 201
+    classified = process(application_id, certificate.json()["id"], headers)
+    assert classified.status_code == 200, classified.text
+    result = classified.json()["classification"]
+    assert result["status"] == "classified"
+    assert result["candidate_document_type"] == "fire_safety_certificate"
+    assert result["match_strength"] == "strong"
+    assert {item["signal"] for item in result["evidence"]} >= {
+        "fire safety certificate",
+        "fire department",
+    }
+    assert "type suggestion only" in result["explanation"]
+
+    generic = upload(application_id, headers, content=make_text_pdf("General records and correspondence"))
+    assert generic.status_code == 201
+    uncertain = process(application_id, generic.json()["id"], headers)
+    assert uncertain.status_code == 200, uncertain.text
+    uncertain_result = uncertain.json()["classification"]
+    assert uncertain_result["status"] == "needs_review"
+    assert uncertain_result["candidate_document_type"] is None
+    assert uncertain_result["match_strength"] == "none"
+
+
+def test_checklist_flags_expired_date_as_advisory_and_rejects_ambiguous_dates(test_database):
+    institution_id = create_institution(test_database, "Expiry institution")
+    create_user(test_database, "expiry@example.com", UserRole.INSTITUTION_USER, institution_id)
+    application_id = create_application(test_database, "EXPIRY-1", institution_id)
+    with test_database() as db:
+        app_obj = db.query(Application).filter_by(id=application_id).one()
+        app_obj.app_type = "Standard Regulatory"
+        db.add(Document(
+            application_id=application_id,
+            doc_type="fire_safety_certificate",
+            original_filename="certificate.pdf",
+            storage_key="certificate.pdf",
+            processing_status="completed",
+            processing_result={
+                "extraction_method": "text",
+                "fields": {
+                    "institution_name": {"value": "Test Entity"},
+                    "certificate_number": {"value": "FSC-001"},
+                    "expiry_date": {"value": "2000-01-01", "evidence": "Expiry Date: 2000-01-01"},
+                },
+            },
+        ))
+        db.commit()
+
+    response = client.post(
+        f"/api/applications/{application_id}/validate-checklist",
+        headers=login("expiry@example.com"),
+    )
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["status"] == "expired_document"
+    assert "advisory" in item["explanation"]
+    with test_database() as db:
+        finding = db.query(Finding).filter_by(
+            application_id=application_id,
+            finding_type="Checklist expiry review",
+        ).one()
+        assert finding.severity == "Medium"
+        assert "not a legal determination" in finding.description
+
+    assert parse_unambiguous_date("2025-12-31").isoformat() == "2025-12-31"
+    assert parse_unambiguous_date("15/02/2025").isoformat() == "2025-02-15"
+    assert parse_unambiguous_date("02/03/2025") is None
+    assert parse_unambiguous_date("not-a-date") is None
 
 
 def test_validation_preview_returns_separate_evidence_without_database_writes(test_database):

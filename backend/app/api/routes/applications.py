@@ -27,6 +27,7 @@ from app.services.regulatory_validation import (
     RegistryValidationError,
 )
 from app.services.document_processing import process_pdf, DocumentLimitError, DocumentProcessingError
+from app.services.checklists import ChecklistConfigError, load_checklists, parse_unambiguous_date
 from app.services.documents import store_pdf, DocumentStorageError, DocumentTooLargeError, InvalidPDFError
 from app.services.consistency import ConsistencyService, ComparisonResult
 from datetime import datetime, timezone
@@ -976,20 +977,16 @@ def validate_application_checklist(
     current_user: User = Depends(get_current_user),
 ):
     application = _get_authorized_application(application_id, db, current_user)
-    # Demonstration checklist only; these categories and field expectations are not official AICTE rules.
-    checklist_by_category = {
-        "Standard Regulatory": {"fire_safety_certificate": ["institution_name", "certificate_number", "expiry_date"]},
-        "Technical Institution": {
-            "fire_safety_certificate": ["institution_name", "certificate_number", "expiry_date"],
-            "faculty_qualification_certificate": ["institution_name", "certificate_number"],
-            "accreditation_certificate": ["institution_name", "certificate_number"],
-        },
-        "Medical College": {
-            "fire_safety_certificate": ["institution_name", "certificate_number", "expiry_date"],
-            "faculty_qualification_certificate": ["institution_name", "certificate_number"],
-            "accreditation_certificate": ["institution_name", "certificate_number"],
-        },
-    }
+    try:
+        checklist_by_category = load_checklists()
+    except ChecklistConfigError as exc:
+        logger.exception("Could not load synthetic application checklist configuration")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Application checklist configuration is unavailable",
+        ) from exc
+
+    # This versioned configuration is synthetic demo content, not official AICTE policy.
     requirements = checklist_by_category.get(application.app_type)
     if requirements is None:
         raise HTTPException(status_code=422, detail="No synthetic checklist is configured for this application category")
@@ -1000,7 +997,9 @@ def validate_application_checklist(
         by_type.setdefault(document.doc_type, []).append(document)
     items = []
     findings_created = 0
-    for doc_type, required_fields in requirements.items():
+    for doc_type, requirement in requirements.items():
+        required_fields = requirement["required_fields"]
+        expiry_field = requirement.get("expiry_field")
         matches = by_type.get(doc_type, [])
         missing_fields: list[str] = []
         linked_document = matches[-1] if matches else None
@@ -1015,16 +1014,42 @@ def validate_application_checklist(
             explanation = "Matching document(s) are attached, but processing failed or OCR was unavailable; completeness could not be assessed."
         else:
             completed = [document for document in matches if document.processing_status == "completed"]
-            fields = completed[-1].processing_result.get("fields", {}) if completed and completed[-1].processing_result else {}
+            processing_result = completed[-1].processing_result if completed and completed[-1].processing_result else {}
+            fields = processing_result.get("fields", {})
             missing_fields = [name for name in required_fields if not isinstance(fields.get(name), dict) or not fields[name].get("value")]
             if missing_fields:
                 check_status = "incomplete_fields"
                 explanation = "Required fields were not extracted: " + ", ".join(missing_fields) + ". Extraction can miss information; reviewer inspection is required."
                 linked_document = completed[-1]
             else:
-                check_status = "received"
-                explanation = "A processed document is attached and the configured required fields were extracted; values remain unverified."
                 linked_document = completed[-1]
+                expiry_value = fields.get(expiry_field, {}).get("value") if expiry_field else None
+                if expiry_field and expiry_value:
+                    extraction_method = processing_result.get("extraction_method")
+                    expiry_confidence = fields[expiry_field].get("confidence")
+                    parsed_expiry = parse_unambiguous_date(str(expiry_value))
+                    low_confidence_ocr = (
+                        extraction_method in {"ocr", "mixed"}
+                        and (not isinstance(expiry_confidence, (int, float)) or expiry_confidence < 0.8)
+                    )
+                    if parsed_expiry is None or low_confidence_ocr:
+                        check_status = "expiry_unverified"
+                        explanation = (
+                            f"The extracted {expiry_field} value '{expiry_value}' could not be interpreted "
+                            "reliably. Confirm the date from the source document; no expiry conclusion was made."
+                        )
+                    elif parsed_expiry < datetime.now(timezone.utc).date():
+                        check_status = "expired_document"
+                        explanation = (
+                            f"The extracted {expiry_field} value is {parsed_expiry.isoformat()}, which is before "
+                            "today. This is an advisory date check, not a legal determination. A reviewer must confirm the source and applicability."
+                        )
+                    else:
+                        check_status = "received"
+                        explanation = "The configured fields were extracted and the expiry date is not before today; values remain unverified."
+                else:
+                    check_status = "received"
+                    explanation = "A processed document is attached and the configured required fields were extracted; values remain unverified."
         if check_status != "received":
             description = f"Synthetic checklist requirement '{doc_type}' is {check_status}. {explanation}"
             exists = db.query(Finding.id).filter(
@@ -1038,8 +1063,8 @@ def validate_application_checklist(
                 db.add(Finding(
                     application_id=application.id,
                     document_id=linked_document.id if linked_document else None,
-                    finding_type="Checklist completeness",
-                    severity="Medium" if check_status in {"processing_pending", "processing_failed"} else "High",
+                    finding_type=("Checklist expiry review" if check_status in {"expired_document", "expiry_unverified"} else "Checklist completeness"),
+                    severity="Medium" if check_status in {"processing_pending", "processing_failed", "expired_document", "expiry_unverified"} else "High",
                     description=description,
                     status="open",
                 ))

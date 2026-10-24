@@ -132,6 +132,13 @@ type DocumentProcessingResult = {
   extraction_method: string;
   pages_processed: number;
   fields: Record<string, ExtractedField>;
+  classification: {
+    status: 'classified' | 'needs_review' | 'unavailable';
+    candidate_document_type: string | null;
+    match_strength: 'strong' | 'possible' | 'none';
+    evidence: { page: number; signal: string; excerpt: string; document_type?: string | null }[];
+    explanation: string;
+  } | null;
   warnings: string[];
   processed_at: string | null;
 };
@@ -1623,7 +1630,7 @@ function GlobalVerification() {
                         {integrityResults[document.id].duplicate_file_check.matches.map(match => <p key={match.document_id}>Matching document ID {match.document_id}: {match.original_filename}</p>)}
                         <p><b>PDF structure ({integrityResults[document.id].pdf_structure_check.status}):</b> {integrityResults[document.id].pdf_structure_check.explanation}</p>
                         <p><b>Metadata ({integrityResults[document.id].metadata_check.status}):</b> {integrityResults[document.id].metadata_check.explanation}</p>
-                        <p>Issuer verification: {integrityResults[document.id].issuer_verification}. No genuineness or fraud determination is made.</p>
+                        <p>Issuer verification not connected — manual verification required. The API status is {integrityResults[document.id].issuer_verification}; no genuineness or fraud determination is made.</p>
                         {integrityResults[document.id].limitations.map((limitation, index) => <p key={index} className="validation-meta">{limitation}</p>)}
                       </section>
                     )}
@@ -1634,6 +1641,19 @@ function GlobalVerification() {
                       <section className="validation-subsection">
                         <h4>Latest extraction response · {processingResults[document.id].extraction_method}</h4>
                         <p className="validation-meta">Extraction is unverified. Pages processed: {processingResults[document.id].pages_processed}.</p>
+                        {processingResults[document.id].classification && (
+                          <section className="validation-subsection">
+                            <h5>Content-based type suggestion · {processingResults[document.id].classification?.status.replaceAll('_', ' ')}</h5>
+                            <p>{processingResults[document.id].classification?.explanation}</p>
+                            <p><b>Suggested type:</b> {processingResults[document.id].classification?.candidate_document_type ?? 'Unclassified; assign manually'}</p>
+                            {processingResults[document.id].classification?.evidence.map((evidence, index) => (
+                              <p key={`${evidence.page}-${evidence.signal}-${index}`}>
+                                {evidence.document_type ? `${evidence.document_type} · ` : ''}Page {evidence.page} · matched “{evidence.signal}” · {evidence.excerpt}
+                              </p>
+                            ))}
+                            <small>Classification is a configurable text-match suggestion. It does not verify document authenticity or change the submitted document type.</small>
+                          </section>
+                        )}
                         {Object.entries(processingResults[document.id].fields).map(([name, field]) => (
                           <p key={name}><b>{name.replaceAll('_', ' ')}:</b> {field.value ?? 'Not extracted'}{field.evidence ? ` · Evidence: ${field.evidence}` : ''}{field.page !== null ? ` · Page ${field.page}` : ''}</p>
                         ))}

@@ -1,0 +1,37 @@
+{
+  "config_version": 1,
+  "source": "synthetic_demo",
+  "disclosure": "Illustrative checklist only; not an official AICTE or regulatory requirements registry.",
+  "categories": {
+    "Standard Regulatory": {
+      "fire_safety_certificate": {
+        "required_fields": ["institution_name", "certificate_number", "expiry_date"],
+        "expiry_field": "expiry_date"
+      }
+    },
+    "Technical Institution": {
+      "fire_safety_certificate": {
+        "required_fields": ["institution_name", "certificate_number", "expiry_date"],
+        "expiry_field": "expiry_date"
+      },
+      "faculty_qualification_certificate": {
+        "required_fields": ["institution_name", "certificate_number"]
+      },
+      "accreditation_certificate": {
+        "required_fields": ["institution_name", "certificate_number"]
+      }
+    },
+    "Medical College": {
+      "fire_safety_certificate": {
+        "required_fields": ["institution_name", "certificate_number", "expiry_date"],
+        "expiry_field": "expiry_date"
+      },
+      "faculty_qualification_certificate": {
+        "required_fields": ["institution_name", "certificate_number"]
+      },
+      "accreditation_certificate": {
+        "required_fields": ["institution_name", "certificate_number"]
+      }
+    }
+  }
+}

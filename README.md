@@ -48,7 +48,9 @@ See [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md) for a feature-by-feat
 
 Backend settings are read by `backend/app/core/config.py` from environment variables and `.env` in the backend process working directory. See `backend/.env.example` for setting names. If creating a local `.env`, do not overwrite an existing one; replace example values with values appropriate for your machine. Keep secrets out of source control and logs. The development JWT fallback is not appropriate outside development; configure a strong secret for any shared deployment. Configure `DATABASE_URL`, `APP_ENV`, and `CORS_ORIGINS` for the intended environment. Document limits and optional Tesseract path are configurable there as well.
 
-The frontend uses `VITE_API_URL` when supplied; otherwise it connects to `http://localhost:8000`.
+The frontend uses `VITE_API_URL` when supplied; otherwise it connects to `http://127.0.0.1:8000`.
+
+PDF processing includes a conservative content-based document type suggestion. Operators can adjust the synthetic text signals in `data/processed/document_categories.json`; the suggestion includes page evidence, requires reviewer confirmation when matches are weak or ambiguous, and never changes the document's submitted type. Synthetic application checklist categories and required fields are configured in `data/processed/application_checklists.json`. These files are demonstration configuration, not official AICTE requirements. Expiry checks use only configured fields and unambiguous dates; results are advisory and require source review.
 
 ## Database setup
 

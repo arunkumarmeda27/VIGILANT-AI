@@ -52,12 +52,29 @@ class ExtractedFieldOut(BaseModel):
     confidence: Optional[float]
     status: str
 
+
+class ClassificationEvidenceOut(BaseModel):
+    page: int
+    signal: str
+    excerpt: str
+    document_type: Optional[str] = None
+
+
+class DocumentClassificationOut(BaseModel):
+    status: Literal["classified", "needs_review", "unavailable"]
+    candidate_document_type: Optional[str]
+    match_strength: Literal["strong", "possible", "none"]
+    evidence: list[ClassificationEvidenceOut]
+    explanation: str
+
+
 class DocumentProcessingOut(BaseModel):
     document_id: int
     processing_status: str
     extraction_method: str
     pages_processed: int
     fields: dict[str, ExtractedFieldOut]
+    classification: Optional[DocumentClassificationOut] = None
     warnings: list[str]
     processed_at: Optional[datetime] = None
 
@@ -270,7 +287,15 @@ class FindingReviewCreate(BaseModel):
 
 class ChecklistItemOut(BaseModel):
     document_type: str
-    status: Literal["missing_document", "processing_pending", "processing_failed", "incomplete_fields", "received"]
+    status: Literal[
+        "missing_document",
+        "processing_pending",
+        "processing_failed",
+        "incomplete_fields",
+        "expired_document",
+        "expiry_unverified",
+        "received",
+    ]
     document_ids: list[int] = Field(default_factory=list)
     missing_fields: list[str] = Field(default_factory=list)
     explanation: str

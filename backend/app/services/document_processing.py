@@ -215,6 +215,22 @@ def process_pdf(
             else "text" if methods == {"text"}
             else "none"
         )
+        try:
+            from app.services.document_classification import (
+                DocumentClassificationConfigError,
+                classify_document_text,
+            )
+
+            classification = classify_document_text(pages)
+        except DocumentClassificationConfigError:
+            classification = {
+                "status": "unavailable",
+                "candidate_document_type": None,
+                "match_strength": "none",
+                "evidence": [],
+                "explanation": "Classification configuration is unavailable; assign the document type manually.",
+            }
+            warnings.append("Document classification is unavailable; manual classification is required.")
         if time.monotonic() - started > max_seconds:
             raise DocumentLimitError("PDF processing exceeded its time limit")
         return {
@@ -222,6 +238,7 @@ def process_pdf(
             "extraction_method": extraction_method,
             "pages_processed": len(pages),
             "fields": _extract_fields(pages),
+            "classification": classification,
             "warnings": list(dict.fromkeys(warnings)),
         }
     except DocumentProcessingError:
