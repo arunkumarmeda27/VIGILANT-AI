@@ -21,7 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.create_table(
         'document_consistency_results',
-        sa.Column('id', sa.Integer(), primary_key=True, index=True),
+        sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('application_id', sa.Integer(), sa.ForeignKey('applications.id', ondelete='CASCADE'), nullable=False),
         sa.Column('field', sa.String(100), nullable=False),
         sa.Column('category', sa.String(50), nullable=False),
