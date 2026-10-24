@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useMemo, useState, useEffect } from 'react';
+import React, { createContext, useContext, useMemo, useRef, useState, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import { AlertTriangle, ArrowRight, ClipboardCheck, Eye, EyeOff, FileCheck2, FileText, LayoutDashboard, ListChecks, Menu, Search, ShieldCheck, UserRound, XCircle, Lock, Mail, Loader2 } from 'lucide-react';
@@ -1361,6 +1361,7 @@ function AssessmentReviewPage() {
   const [note, setNote] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -1398,7 +1399,9 @@ function AssessmentReviewPage() {
 
   const saveReview = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!token || saving) return;
+    if (!token || savingRef.current) return;
+    if (!note.trim()) { setError('Add a reviewer note before recording this decision.'); return; }
+    savingRef.current = true;
     setSaving(true); setError(null); setNotice(null);
     try {
       await requestApi(`/api/compliance-assessments/${id}/reviews`, token, {
@@ -1410,12 +1413,13 @@ function AssessmentReviewPage() {
       setNotice('Your decision was saved. The automated assessment remains unchanged.');
     } catch (reason) {
       setError(reason instanceof ApiRequestError ? reason.message : 'Could not save the review decision.');
-    } finally { setSaving(false); }
+    } finally { savingRef.current = false; setSaving(false); }
   };
 
   const assignReviewer = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!token || !reviewerId || saving) return;
+    if (!token || !reviewerId || savingRef.current) return;
+    savingRef.current = true;
     setSaving(true); setError(null); setNotice(null);
     try {
       await requestApi(`/api/compliance-assessments/${id}/assignment`, token, {
@@ -1426,7 +1430,7 @@ function AssessmentReviewPage() {
       setNotice('Reviewer assignment was saved and added to audit history.');
     } catch (reason) {
       setError(reason instanceof ApiRequestError ? reason.message : 'Could not assign this reviewer.');
-    } finally { setSaving(false); }
+    } finally { savingRef.current = false; setSaving(false); }
   };
 
   if (loading) return <Shell title="Assessment review" liveData><p role="status">Loading persisted review details…</p></Shell>;
@@ -1452,11 +1456,23 @@ function AssessmentReviewPage() {
         </section>
         {user?.role === 'ADMIN' && <section className="content-section">
           <Heading title="Assign reviewer" text="Only active backend reviewer accounts can be assigned. The server enforces this permission." />
-          {reviewers.length ? <form className="live-page-actions" onSubmit={assignReviewer}>
+          {reviewers.length ? <form className="assessment-assignment-form" onSubmit={assignReviewer}>
             <label>Reviewer<select required value={reviewerId} onChange={event => setReviewerId(event.target.value)}><option value="">Choose a reviewer</option>{reviewers.map(reviewer => <option key={reviewer.id} value={reviewer.id}>{reviewer.full_name} · {reviewer.email}</option>)}</select></label>
             <button className="button primary" disabled={saving || !reviewerId}>{saving ? 'Saving…' : 'Save assignment'}</button>
-          </form> : <p>No active reviewer accounts are available to assign.</p>}
+          </form> : <div className="reviewer-empty-state"><p>No active reviewer accounts are available to assign. An administrator can create one with <code>POST /api/auth/users</code> and role <code>REVIEWER</code>, or activate an existing reviewer with <code>PATCH /api/auth/users/{'{user_id}'}</code>.</p><p>Use an administrator account and the backend API described in the README. Creating or changing an account is an explicit administrator action.</p></div>}
         </section>}
+        {user?.role === 'REVIEWER' && assessment.assigned_reviewer_id === user.id && <section className="content-section assessment-decision-section">
+          <Heading title="Record human decision" text="This decision is stored as an append-only reviewer record. It does not change the automated assessment or application status." />
+          <form className="application-form assessment-review-form" onSubmit={saveReview}>
+            <label htmlFor="assessment-outcome">Decision<select id="assessment-outcome" value={outcome} onChange={event => setOutcome(event.target.value as AssessmentReview['outcome'])}>
+              <option value="evidence_accepted">Accept evidence</option><option value="evidence_rejected">Reject evidence</option><option value="information_requested">Request additional information</option><option value="further_investigation">Mark for further investigation</option>
+            </select></label>
+            <label htmlFor="assessment-note">Reviewer note<textarea id="assessment-note" aria-describedby="assessment-note-help" required maxLength={2000} value={note} onChange={event => setNote(event.target.value)} /></label>
+            <small id="assessment-note-help" className="assessment-note-help">Required. Add the reason or requested follow-up (up to 2,000 characters). {note.length}/2000</small>
+            <button className="button primary" disabled={saving || !note.trim()}>{saving ? 'Saving…' : 'Record decision'}</button>
+          </form>
+        </section>}
+        {user?.role === 'REVIEWER' && assessment.assigned_reviewer_id !== user.id && <section className="content-section"><Heading title="Human decision" text="Decisions can be recorded only by the reviewer assigned to this assessment." /><p>This assessment is not assigned to your reviewer account. Ask an administrator to assign it before recording a decision.</p></section>}
         <section className="content-section">
           <Heading title="Linked document evidence" text="Extracted values remain unverified and are shown with source excerpts and page references when recorded." />
           {assessment.document_evidence.length ? assessment.document_evidence.map(document => (
@@ -1470,16 +1486,8 @@ function AssessmentReviewPage() {
         <section className="content-section">
           <Heading title="Human review history" text="Decisions are append-only, attributed to the authenticated reviewer, and recorded in audit history." />
           {assessment.reviews.length ? assessment.reviews.map(review => <article className="validation-check" key={review.id}>
-            <strong>{review.outcome.replaceAll('_', ' ')} · {review.reviewer_name}</strong><p>{review.note || 'No note added.'}</p><small>{new Date(review.created_at).toLocaleString()}</small>
+            <strong>{review.outcome.replaceAll('_', ' ')} · {review.reviewer_name}</strong><p>{review.note || 'No note added.'}</p><time dateTime={review.created_at}>{new Date(review.created_at).toLocaleString()}</time>
           </article>) : <p>No human decisions have been recorded for this assessment.</p>}
-          {user?.role === 'REVIEWER' && assessment.assigned_reviewer_id === user.id && <form className="application-form" onSubmit={saveReview}>
-            <label>Decision<select value={outcome} onChange={event => setOutcome(event.target.value as AssessmentReview['outcome'])}>
-              <option value="evidence_accepted">Accept evidence</option><option value="evidence_rejected">Reject evidence</option><option value="information_requested">Request additional information</option><option value="further_investigation">Mark for further investigation</option>
-            </select></label>
-            <label>Reviewer note<textarea maxLength={2000} value={note} onChange={event => setNote(event.target.value)} /></label>
-            <button className="button primary" disabled={saving}>{saving ? 'Saving…' : 'Record decision'}</button>
-          </form>}
-          {user?.role === 'REVIEWER' && assessment.assigned_reviewer_id !== user.id && <p>This assessment is not assigned to your reviewer account; the server will reject decision attempts.</p>}
         </section>
       </>}
     </Shell>

@@ -97,6 +97,9 @@ Application routes:
 - `PATCH /api/applications/{application_id}`: update role-permitted application fields.
 - `GET /api/institutions/` and `POST /api/institutions/`: administrator-only institution selection and creation.
 - `GET /api/compliance-assessments/`: paginated assessments filtered by role and access scope.
+- `GET /api/compliance-assessments/reviewers`: administrator-only list of active reviewer accounts.
+- `POST /api/compliance-assessments/{assessment_id}/assignment`: administrator-only reviewer assignment.
+- `POST /api/compliance-assessments/{assessment_id}/reviews`: append a decision (`evidence_accepted`, `evidence_rejected`, `information_requested`, or `further_investigation`) and reviewer note. Only the authenticated reviewer assigned to that assessment can submit it.
 - `GET /api/audit-events/`: paginated audit events filtered by role and access scope.
 - `GET /api/applications/{application_id}/findings`: persisted findings for an authorized application.
 - `POST /api/applications/{application_id}/validate-checklist`: run the configured synthetic category checklist and persist advisory completeness findings.
@@ -108,6 +111,12 @@ Institution users must already be assigned to an institution; ownership is deriv
 The live Applications page lists backend records and offers creation to administrators and institution users. A new application page displays its persisted reference, ID, timestamps, status, and document count.
 
 On a persisted application detail page, authorized users can run the category checklist and registry-based validation and inspect persisted findings/assessments; the checklist is explicitly synthetic and the registry page labels source/currentness limits. Assigned reviewers can append a finding outcome and note, preserving all earlier reviews and the automated finding. With at least two processed documents, users can run cross-document validation. The server creates a distinct consistency run, stores its comparisons, and exposes authorized history at `GET /api/applications/{application_id}/consistency-runs`. Prior runs remain available and result rows include the associated document filenames. Validation and review actions are recorded in audit history.
+
+### Reviewer accounts and assessment review
+
+Reviewer assignment requires an active account whose role is exactly `REVIEWER`. An administrator can create an account through the existing authenticated `POST /api/auth/users` endpoint with `full_name`, `email`, a securely chosen `password`, and `role: "REVIEWER"`. To activate an existing reviewer, use administrator-only `PATCH /api/auth/users/{user_id}` with `{"is_active": true}`; the endpoint also supports correcting its role to `REVIEWER` when authorized. Use the existing account ID from your administrator records when updating an account; this API does not provide a user-list endpoint. These account-management calls require an administrator bearer token. No reviewer is provisioned automatically. The assessment page lists only active reviewer accounts and explains this workflow when none are available.
+
+After an administrator assigns an assessment, the assigned reviewer can record a decision from its Assessment Review page. Each decision is retained as an append-only history entry with reviewer identity, outcome, note, and timestamp; recording a decision does not alter the automated assessment or application approval status.
 
 ## Document demonstration
 

@@ -315,11 +315,24 @@ def test_assessment_assignment_and_append_only_review_are_authorized_and_audited
 
     review_url = f"/api/compliance-assessments/{assessment_id}/reviews"
     # The API intentionally hides assessments not assigned to this reviewer.
+    assert client.post(review_url, json={"outcome": "evidence_accepted", "note": "missing auth"}).status_code == 401
     assert client.post(review_url, headers=other_headers, json={"outcome": "evidence_accepted", "note": "not assigned"}).status_code == 404
     assert client.post(review_url, headers=owner_headers, json={"outcome": "evidence_accepted", "note": "not a reviewer"}).status_code == 403
+    invalid_outcome = client.post(review_url, headers=reviewer_headers, json={"outcome": "approved", "note": "invalid outcome"})
+    assert invalid_outcome.status_code == 422
     decision1 = client.post(review_url, headers=reviewer_headers, json={"outcome": "information_requested", "note": "Please provide a legible source."})
     decision2 = client.post(review_url, headers=reviewer_headers, json={"outcome": "further_investigation", "note": "Check issuer manually."})
     assert decision1.status_code == decision2.status_code == 201
+    assert decision1.json()["reviewer_name"] == "Test User"
+    assert decision1.json()["outcome"] == "information_requested"
+    assert decision1.json()["note"] == "Please provide a legible source."
+    assert decision1.json()["created_at"]
+    history = client.get(detail_url, headers=reviewer_headers)
+    assert history.status_code == 200
+    assert [review["outcome"] for review in history.json()["reviews"]] == [
+        "information_requested", "further_investigation",
+    ]
+    assert all(review["reviewer_name"] == "Test User" and review["created_at"] for review in history.json()["reviews"])
     audit = client.get(f"/api/audit-events/?application_id={app_id}&limit=100", headers=reviewer_headers)
     assert audit.status_code == 200
     assert {event["action"] for event in audit.json()["items"]} >= {
@@ -330,6 +343,7 @@ def test_assessment_assignment_and_append_only_review_are_authorized_and_audited
     with TestingSessionLocal() as session:
         assert session.query(ComplianceAssessmentReview).filter_by(assessment_id=assessment_id).count() == 2
         assert session.query(ComplianceAssessment).filter_by(id=assessment_id).one().status == "Not evaluated"
+        assert session.query(Application).filter_by(id=app_id).one().status == "submitted"
         assert session.query(AuditEvent).filter_by(action="compliance_assessment.reviewer_assigned").count() == 1
         assert session.query(AuditEvent).filter_by(action="compliance_assessment.review_recorded").count() == 2
 

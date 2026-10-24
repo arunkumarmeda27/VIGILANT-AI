@@ -116,6 +116,19 @@
 .audit-event-metadata dt{font-size:10px;color:#667085;text-transform:uppercase;font-weight:700}
 .audit-event-metadata dd{margin:4px 0 0;font-size:12px;overflow-wrap:anywhere}
 .audit-pagination{justify-content:center;margin-top:16px}
+.assessment-assignment-form{display:grid;grid-template-columns:minmax(220px,1fr) auto;align-items:end;gap:12px;max-width:760px}
+.assessment-assignment-form label,.assessment-review-form label{display:grid;gap:7px;margin:7px 0;color:#344054;font-size:13px;font-weight:600}
+.assessment-assignment-form select,.assessment-review-form select,.assessment-review-form textarea{width:100%;min-width:0;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#182230;font:inherit}
+.assessment-assignment-form select,.assessment-review-form select{min-height:42px;padding:8px 11px}
+.assessment-review-form{display:grid;gap:5px;max-width:760px}
+.assessment-review-form textarea{min-height:120px;padding:10px 11px;resize:vertical;line-height:1.5}
+.assessment-note-help{color:#667085;font-size:12px}
+.assessment-review-form button{justify-self:start;margin-top:8px}
+.reviewer-empty-state{max-width:800px;padding:14px 16px;border:1px solid #e4e7ec;border-radius:7px;background:#f8fafc;color:#475467;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.reviewer-empty-state p{margin:0}.reviewer-empty-state p+p{margin-top:8px;color:#667085}
+.reviewer-empty-state code{overflow-wrap:anywhere}
+.content-section time{display:block;margin-top:7px;color:#667085;font-size:12px}
+@media(max-width:620px){.assessment-assignment-form{grid-template-columns:1fr}.assessment-assignment-form .button{justify-self:start}}
 @media(max-width:620px){.institution-create-form{grid-template-columns:1fr}.audit-event-card>div:first-child{align-items:flex-start;flex-direction:column}}
 .live-application-select select,.live-upload-form select,.live-upload-form input{min-width:0;min-height:40px;padding:8px 10px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#182230;font:inherit}
 .live-upload-form{display:grid;grid-template-columns:minmax(180px,.7fr) minmax(240px,1.3fr) auto;align-items:end;gap:14px;margin-top:16px}
