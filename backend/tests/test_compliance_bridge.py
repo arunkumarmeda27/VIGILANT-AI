@@ -364,6 +364,18 @@ def test_assessment_assignment_and_append_only_review_are_authorized_and_audited
         "information_requested", "further_investigation",
     ]
     assert all(review["reviewer_name"] == "Test User" and review["created_at"] for review in history.json()["reviews"])
+    assessment_list = client.get(
+        f"/api/compliance-assessments/?application_id={app_id}&limit=200",
+        headers=reviewer_headers,
+    )
+    assert assessment_list.status_code == 200
+    listed_assessment = next(
+        item for item in assessment_list.json()["items"] if item["id"] == assessment_id
+    )
+    assert [review["outcome"] for review in listed_assessment["reviews"]] == [
+        "information_requested", "further_investigation",
+    ]
+    assert listed_assessment["reviews"][0]["note"] == "Please provide a legible source."
     audit = client.get(f"/api/audit-events/?application_id={app_id}&limit=100", headers=reviewer_headers)
     assert audit.status_code == 200
     assert {event["action"] for event in audit.json()["items"]} >= {

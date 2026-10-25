@@ -68,6 +68,7 @@ type ComplianceAssessment = {
   explanation: string;
   assessed_at: string;
   reviewer_name: string | null;
+  reviews: AssessmentReview[];
 };
 type AssessmentReview = {
   id: number;
@@ -1424,10 +1425,12 @@ function AssessmentWorkspace({ title }: { title: string }) {
         {error && <div className="validation-error" role="alert"><AlertTriangle size={18} aria-hidden="true" />{error}</div>}
         {loading ? <p role="status">Loading authorized assessments…</p> : page?.items.length ? (
           <>
-            <div className="table-wrap" role="region" aria-label={`${title} table; scroll horizontally for more columns`} tabIndex={0}><table><thead><tr><th>Application</th><th>Institution</th><th>Rule</th><th>Category</th><th>Recorded status</th><th>Reviewer</th><th>Assessed</th><th>Explanation</th><th>Review</th></tr></thead>
+            <div className="table-wrap" role="region" aria-label={`${title} table; scroll horizontally for more columns`} tabIndex={0}><table><thead><tr><th>Application</th><th>Institution</th><th>Rule</th><th>Category</th><th>Recorded status</th><th>Reviewer</th><th>Human decisions</th><th>Assessed</th><th>Explanation</th><th>Review</th></tr></thead>
               <tbody>{page.items.map(item => <tr key={item.id}>
                 <td><Link className="table-link" to={`/applications/${item.application_id}`}>{item.application_reference}</Link></td>
-                <td>{item.entity_name}</td><td>{item.rule_code} · {item.rule_title}</td><td>{item.category}</td><td><Tag>{item.status}</Tag></td><td>{item.reviewer_name || 'Unassigned'}</td><td>{new Date(item.assessed_at).toLocaleString()}</td><td>{item.explanation}</td>
+                <td>{item.entity_name}</td><td>{item.rule_code} · {item.rule_title}</td><td>{item.category}</td><td><Tag>{item.status}</Tag></td><td>{item.reviewer_name || 'Unassigned'}</td>
+                <td>{item.reviews.length ? `${item.reviews.length} decision(s) · latest: ${item.reviews[item.reviews.length - 1].outcome.replaceAll('_', ' ')}` : 'No decision recorded'}</td>
+                <td>{new Date(item.assessed_at).toLocaleString()}</td><td>{item.explanation}</td>
                 <td><Link className="button secondary" to={`/compliance-assessments/${item.id}`}>Open review</Link></td>
               </tr>)}</tbody>
             </table></div>
@@ -2139,6 +2142,14 @@ function PersistedReport() {
             <p>{item.explanation}</p>
             <small>Assessment record {item.id} · Snapshot recorded {new Date(item.assessed_at).toLocaleString()} · Reviewer: {item.reviewer_name || 'Unassigned'}</small>
           </section>)}</div> : <p>No persisted assessments are available for this application.</p>}
+          <h3>Human assessment review history</h3>
+          {assessments.some(item => item.reviews.length) ? assessments.flatMap(item => item.reviews.map(review => ({ assessment: item, review })))
+            .sort((left, right) => Date.parse(left.review.created_at) - Date.parse(right.review.created_at) || left.review.id - right.review.id)
+            .map(({ assessment, review }) => <section className="report-evidence" key={`assessment-review-${review.id}`}>
+              <p><b>Assessment {assessment.id} · {assessment.rule_code} · {review.outcome.replaceAll('_', ' ')}</b></p>
+              <p>{review.note || 'No note added.'}</p>
+              <small>{review.reviewer_name} · {new Date(review.created_at).toLocaleString()}</small>
+            </section>) : <p>No human assessment decisions are stored for this application. This does not change its automated results or application status.</p>}
           <h3>Cross-document validation history</h3>
           {runs.length ? runs.map(run => <section className="report-evidence" key={run.id}><p><b>Run {run.id}</b> · {run.status} · {run.comparisons_count} comparison(s) · {new Date(run.created_at).toLocaleString()}</p>
             {run.results.length ? run.results.map(result => <p key={result.id}><b>{result.category} · {result.field}:</b> {result.doc1_filename}: {result.val1 ?? 'No value'} ↔ {result.doc2_filename}: {result.val2 ?? 'No value'}. {result.explanation}</p>) : <small>No comparable fields were recorded.</small>}

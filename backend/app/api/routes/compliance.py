@@ -2,7 +2,7 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.api.deps import get_current_user
 from app.db.session import get_db
@@ -224,6 +224,11 @@ def list_compliance_assessments(
         .join(Application, Application.id == ComplianceAssessment.application_id)
         .join(ComplianceRule, ComplianceRule.id == ComplianceAssessment.rule_id)
         .outerjoin(User, User.id == ComplianceAssessment.reviewer_id)
+        .options(
+            selectinload(ComplianceAssessment.reviews).joinedload(
+                ComplianceAssessmentReview.reviewer
+            )
+        )
     )
     if current_user.role == UserRole.ADMIN.value:
         pass
@@ -266,6 +271,13 @@ def list_compliance_assessments(
             "explanation": assessment.explanation,
             "assessed_at": assessment.assessed_at,
             "reviewer_name": reviewer.full_name if reviewer else None,
+            "reviews": [
+                _assessment_review_out(review)
+                for review in sorted(
+                    assessment.reviews,
+                    key=lambda item: (item.created_at, item.id),
+                )
+            ],
         }
         for assessment, application, rule, reviewer in rows
     ]

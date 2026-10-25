@@ -206,6 +206,16 @@ class DocumentIntegrityPreviewOut(BaseModel):
     limitations: list[str]
 
 
+class ComplianceAssessmentReviewOut(BaseModel):
+    id: int
+    assessment_id: int
+    reviewer_id: int
+    reviewer_name: str
+    outcome: Literal["evidence_accepted", "evidence_rejected", "information_requested", "further_investigation"]
+    note: str
+    created_at: datetime
+
+
 class ComplianceAssessmentOut(BaseModel):
     id: int
     application_id: int
@@ -218,6 +228,7 @@ class ComplianceAssessmentOut(BaseModel):
     explanation: str
     assessed_at: datetime
     reviewer_name: Optional[str]
+    reviews: list[ComplianceAssessmentReviewOut] = Field(default_factory=list)
 
 
 class ComplianceAssessmentPageOut(BaseModel):
@@ -225,24 +236,11 @@ class ComplianceAssessmentPageOut(BaseModel):
     total: int
 
 
-class ComplianceAssessmentReviewOut(BaseModel):
-    id: int
-    assessment_id: int
-    reviewer_id: int
-    reviewer_name: str
-    outcome: Literal["evidence_accepted", "evidence_rejected", "information_requested", "further_investigation"]
-    note: str
-    created_at: datetime
-
-
 class ComplianceAssessmentDetailOut(ComplianceAssessmentOut):
     application_status: str
     rule_description: str
     assigned_reviewer_id: Optional[int]
     document_evidence: list[dict[str, object]]
-    reviews: list[ComplianceAssessmentReviewOut]
-
-
 class ComplianceAssessmentReviewCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     outcome: Literal["evidence_accepted", "evidence_rejected", "information_requested", "further_investigation"]
