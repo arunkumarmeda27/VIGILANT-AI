@@ -2064,6 +2064,7 @@ function PersistedReport() {
   const [assessments, setAssessments] = useState<ComplianceAssessment[]>([]);
   const [runs, setRuns] = useState<ConsistencyRunRecord[]>([]);
   const [findings, setFindings] = useState<PersistedFinding[]>([]);
+  const [checklist, setChecklist] = useState<ApplicationChecklist | null>(null);
   const [auditEvents, setAuditEvents] = useState<AuditEventItem[]>([]);
   const [processingResults, setProcessingResults] = useState<Record<number, DocumentProcessingResult>>({});
   const [generatedAt, setGeneratedAt] = useState('');
@@ -2083,7 +2084,12 @@ function PersistedReport() {
       requestApi<ConsistencyRunHistory>(`/api/applications/${id}/consistency-runs`, token),
       requestApi<PersistedFinding[]>(`/api/applications/${id}/findings`, token),
       loadAllAuditEvents(token, Number(id)),
-    ]).then(async ([app, docs, assessmentItems, history, persistedFindings, events]) => {
+      requestApi<ApplicationChecklist>(`/api/applications/${id}/checklist`, token)
+        .catch(reason => {
+          if (reason instanceof ApiRequestError && reason.status === 422) return null;
+          throw reason;
+        }),
+    ]).then(async ([app, docs, assessmentItems, history, persistedFindings, events, checklistResult]) => {
       const extracted = await Promise.all(docs
         .filter(document => ['completed', 'ocr_unavailable', 'failed'].includes(document.processing_status))
         .map(async document => {
@@ -2103,6 +2109,7 @@ function PersistedReport() {
       setAssessments(assessmentItems);
       setRuns(history.items);
       setFindings(persistedFindings);
+      setChecklist(checklistResult);
       setAuditEvents(events);
       setProcessingResults(Object.fromEntries(extracted.filter((item): item is readonly [number, DocumentProcessingResult] => item !== null)));
       setGeneratedAt(new Date().toLocaleString());
@@ -2136,6 +2143,15 @@ function PersistedReport() {
               {Object.entries(processingResults[document.id].fields).map(([fieldName, field]) => <p key={fieldName}><b>{fieldName.replaceAll('_', ' ')}:</b> {field.value ?? 'Not extracted'} · Unverified{field.evidence ? ` · ${field.evidence}` : ''}{field.page ? ` · Page ${field.page}` : ''}</p>)}
             </> : <small>No persisted extraction result is available for this document.</small>}
           </section>) : <p>No documents are currently attached.</p>}
+          <h3>Current synthetic checklist preview</h3>
+          {checklist ? <>
+            <p>Category: {checklist.category} · Source: synthetic demonstration configuration. This is not an official regulatory checklist.</p>
+            {checklist.items.map(item => <section className="report-evidence" key={item.document_type}>
+              <p><b>{item.document_type.replaceAll('_', ' ')} · {item.status.replaceAll('_', ' ')}</b></p>
+              <p>{item.explanation}</p>
+              <small>Linked documents: {item.document_ids.length ? item.document_ids.join(', ') : 'None'}{item.missing_fields.length ? ` · Fields not extracted: ${item.missing_fields.join(', ')}` : ''}</small>
+            </section>)}
+          </> : <p>No synthetic checklist is configured for this application category; no checklist conclusion is included.</p>}
           <h3>Persisted automated assessments</h3>
           {assessments.length ? <div className="report-assessment-list">{assessments.map(item => <section className="report-assessment" key={item.id}>
             <div><b>{item.rule_code} · {item.rule_title}</b><Tag>{item.status}</Tag></div>

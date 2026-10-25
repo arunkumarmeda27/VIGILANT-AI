@@ -14,6 +14,7 @@ This audit records repository findings and checks performed for the SIH26261 com
 | Low | Existing nonnumeric illustrative dashboard, finding, and report routes contain synthetic demo records. | Existing UI labels them as illustrative/simulated. They remain outside the persisted numeric application workflow and are listed as a limitation in [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md). |
 | High | The persisted application update endpoint allowed assigned reviewers to edit application status, and both reviewers and administrators had a free-text status field. This could let an assessment review alter the application lifecycle without a controlled transition workflow. | Removed status editing from the application detail UI and API update operation. Reviewer decisions remain append-only assessment/finding review records and cannot alter application status. Status remains visible and can only be changed once a validated lifecycle workflow is implemented. |
 | Medium | The persisted report showed finding-review notes but omitted human assessment decisions, even though authorized assessment detail requests already returned that append-only history. | Added the role-scoped review history to paginated assessment responses using eager loading, displayed the decision count/latest result in the queue, and included reviewer, outcome, note, and timestamp in numeric application reports. |
+| Medium | Application checklist results were returned only by a mutating `POST` operation that also created findings and audit events, so reports could not inspect checklist results without modifying application data. | Extracted a shared checklist evaluator and added an authorized read-only `GET /api/applications/{id}/checklist` preview. The existing POST still records deduplicated findings and its audit event; reports use GET and label the checklist as synthetic. |
 
 ## Workflow and authorization checks
 
@@ -25,7 +26,7 @@ This audit records repository findings and checks performed for the SIH26261 com
 
 ## Verification
 
-- Backend full suite: **142 passed, 16 warnings**.
+- Backend full suite: **143 passed, 16 warnings**.
 - Frontend lint: **passed**.
 - Frontend production build (TypeScript + Vite): **passed**.
 - Python `compileall`: **passed**.

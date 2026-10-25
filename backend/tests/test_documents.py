@@ -280,7 +280,15 @@ def test_synthetic_checklist_distinguishes_missing_pending_and_incomplete_fields
         db.add(Document(application_id=application_id, doc_type="fire_safety_certificate", original_filename="pending.pdf", storage_key="pending.pdf", processing_status="pending"))
         db.commit()
 
-    response = client.post(f"/api/applications/{application_id}/validate-checklist", headers=login("checklist@example.com"))
+    headers = login("checklist@example.com")
+    preview = client.get(f"/api/applications/{application_id}/checklist", headers=headers)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["items"][0]["status"] == "processing_pending"
+    with test_database() as db:
+        assert db.query(Finding).filter_by(application_id=application_id).count() == 0
+        assert db.query(AuditEvent).filter_by(action="application.checklist_validated").count() == 0
+
+    response = client.post(f"/api/applications/{application_id}/validate-checklist", headers=headers)
     assert response.status_code == 200, response.text
     data = response.json()
     assert data["source"] == "synthetic_demo"
@@ -308,6 +316,22 @@ def test_synthetic_checklist_distinguishes_missing_pending_and_incomplete_fields
     assert incomplete.status_code == 200
     assert incomplete.json()["items"][0]["status"] == "incomplete_fields"
     assert set(incomplete.json()["items"][0]["missing_fields"]) == {"certificate_number", "expiry_date"}
+
+
+def test_checklist_preview_requires_authentication_and_respects_application_ownership(test_database):
+    owner_institution = create_institution(test_database, "Checklist preview owner")
+    other_institution = create_institution(test_database, "Checklist preview other")
+    create_user(test_database, "checklist-preview-owner@example.com", UserRole.INSTITUTION_USER, owner_institution)
+    create_user(test_database, "checklist-preview-other@example.com", UserRole.INSTITUTION_USER, other_institution)
+    application_id = create_application(test_database, "CHECKLIST-PREVIEW-ACCESS", owner_institution)
+
+    unauthenticated = client.get(f"/api/applications/{application_id}/checklist")
+    forbidden = client.get(
+        f"/api/applications/{application_id}/checklist",
+        headers=login("checklist-preview-other@example.com"),
+    )
+    assert unauthenticated.status_code == 401
+    assert forbidden.status_code == 404
 
 
 def test_eoa_application_has_explicit_synthetic_checklist_without_scope_claim(test_database):

@@ -1007,13 +1007,7 @@ def list_application_findings(
     ]
 
 
-@router.post("/{application_id}/validate-checklist", response_model=ApplicationChecklistOut)
-def validate_application_checklist(
-    application_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    application = _get_authorized_application(application_id, db, current_user)
+def _evaluate_application_checklist(application: Application, db: Session):
     try:
         checklist_by_category = load_checklists()
     except ChecklistConfigError as exc:
@@ -1028,12 +1022,14 @@ def validate_application_checklist(
     if requirements is None:
         raise HTTPException(status_code=422, detail="No synthetic checklist is configured for this application category")
 
-    documents = db.query(Document).filter(Document.application_id == application.id).all()
+    documents = db.query(Document).filter(
+        Document.application_id == application.id
+    ).order_by(Document.id).all()
     by_type: dict[str, list[Document]] = {}
     for document in documents:
         by_type.setdefault(document.doc_type, []).append(document)
     items = []
-    findings_created = 0
+    finding_candidates = []
     for doc_type, requirement in requirements.items():
         required_fields = requirement["required_fields"]
         expiry_field = requirement.get("expiry_field")
@@ -1094,23 +1090,14 @@ def validate_application_checklist(
                 if check_status in {"expired_document", "expiry_unverified"}
                 else "Checklist completeness"
             )
-            exists = db.query(Finding.id).filter(
-                Finding.application_id == application.id,
-                Finding.document_id == (linked_document.id if linked_document else None),
-                Finding.finding_type == finding_type,
-                Finding.description == description,
-                Finding.status == "open",
-            ).first()
-            if not exists:
-                db.add(Finding(
-                    application_id=application.id,
-                    document_id=linked_document.id if linked_document else None,
-                    finding_type=finding_type,
-                    severity="Medium" if check_status in {"processing_pending", "processing_failed", "expired_document", "expiry_unverified"} else "High",
-                    description=description,
-                    status="open",
-                ))
-                findings_created += 1
+            finding_candidates.append({
+                "application_id": application.id,
+                "document_id": linked_document.id if linked_document else None,
+                "finding_type": finding_type,
+                "severity": "Medium" if check_status in {"processing_pending", "processing_failed", "expired_document", "expiry_unverified"} else "High",
+                "description": description,
+                "status": "open",
+            })
         items.append({
             "document_type": doc_type,
             "status": check_status,
@@ -1118,6 +1105,45 @@ def validate_application_checklist(
             "missing_fields": missing_fields,
             "explanation": explanation,
         })
+    return items, finding_candidates
+
+
+@router.get("/{application_id}/checklist", response_model=ApplicationChecklistOut)
+def get_application_checklist(
+    application_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    application = _get_authorized_application(application_id, db, current_user)
+    items, _finding_candidates = _evaluate_application_checklist(application, db)
+    return {
+        "application_id": application.id,
+        "category": application.app_type,
+        "source": "synthetic_demo",
+        "items": items,
+    }
+
+
+@router.post("/{application_id}/validate-checklist", response_model=ApplicationChecklistOut)
+def validate_application_checklist(
+    application_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    application = _get_authorized_application(application_id, db, current_user)
+    items, finding_candidates = _evaluate_application_checklist(application, db)
+    findings_created = 0
+    for candidate in finding_candidates:
+        exists = db.query(Finding.id).filter(
+            Finding.application_id == candidate["application_id"],
+            Finding.document_id == candidate["document_id"],
+            Finding.finding_type == candidate["finding_type"],
+            Finding.description == candidate["description"],
+            Finding.status == "open",
+        ).first()
+        if not exists:
+            db.add(Finding(**candidate))
+            findings_created += 1
     db.add(AuditEvent(
         user_id=current_user.id,
         action="application.checklist_validated",
