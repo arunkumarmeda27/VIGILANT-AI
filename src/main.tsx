@@ -59,6 +59,7 @@ type AuditEventPage = { items: AuditEventItem[]; limit: number; offset: number; 
 type ComplianceAssessment = {
   id: number;
   application_id: number;
+  assigned_reviewer_id: number | null;
   application_reference: string;
   entity_name: string;
   rule_code: string;
@@ -387,34 +388,69 @@ function Dashboard() {
   const [documents, setDocuments] = useState<PersistedDocument[]>([]);
   const [assessments, setAssessments] = useState<ComplianceAssessment[]>([]);
   const [assessmentTotal, setAssessmentTotal] = useState(0);
+  const [openFindingCount, setOpenFindingCount] = useState(0);
+  const [pendingReviewCount, setPendingReviewCount] = useState(0);
   const [auditEvents, setAuditEvents] = useState<AuditEventItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [partialErrors, setPartialErrors] = useState<string[]>([]);
+  const [refreshCount, setRefreshCount] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setPartialErrors([]);
     if (!token) {
       setLoading(false);
       return () => { cancelled = true; };
     }
-    Promise.all([
-      requestApi<PersistedApplication[]>('/api/applications/', token),
-      requestApi<ComplianceAssessmentPage>('/api/compliance-assessments/?limit=8&offset=0', token),
-      requestApi<AuditEventPage>('/api/audit-events/?limit=6&offset=0', token),
-    ]).then(async ([items, assessmentPage, auditPage]) => {
-      const documentLists = await Promise.all(items.map(application =>
-        requestApi<PersistedDocument[]>(`/api/applications/${application.id}/documents`, token),
-      ));
-      if (!cancelled) {
-        setApplications(items);
-        setDocuments(documentLists.flat());
-        setAssessments(assessmentPage.items);
-        setAssessmentTotal(assessmentPage.total);
-        setAuditEvents(auditPage.items);
-      }
-    })
+    requestApi<PersistedApplication[]>('/api/applications/', token)
+      .then(async items => {
+        const [assessmentResult, auditResult] = await Promise.allSettled([
+          loadAllComplianceAssessments(token),
+          requestApi<AuditEventPage>('/api/audit-events/?limit=6&offset=0', token),
+        ]);
+        const [documentResults, findingResults] = await Promise.all([
+          Promise.allSettled(items.map(application =>
+            requestApi<PersistedDocument[]>(`/api/applications/${application.id}/documents`, token),
+          )),
+          Promise.allSettled(items.map(application =>
+            requestApi<PersistedFinding[]>(`/api/applications/${application.id}/findings`, token),
+          )),
+        ]);
+        const failures = [assessmentResult, auditResult, ...documentResults, ...findingResults]
+          .filter(result => result.status === 'rejected');
+        if (failures.some(result => result.status === 'rejected' && result.reason instanceof ApiRequestError && result.reason.status === 401)) {
+          throw new ApiRequestError(401, 'Your session has expired. Please sign in again.');
+        }
+        const warnings: string[] = [];
+        if (assessmentResult.status === 'rejected') warnings.push('Assessment records could not be loaded.');
+        if (auditResult.status === 'rejected') warnings.push('Recent audit activity could not be loaded.');
+        const availableDocuments = documentResults.flatMap(result => result.status === 'fulfilled' ? result.value : []);
+        const availableFindings = findingResults.flatMap(result => result.status === 'fulfilled' ? result.value : []);
+        const unavailableDocumentLists = documentResults.filter(result => result.status === 'rejected').length;
+        const unavailableFindingLists = findingResults.filter(result => result.status === 'rejected').length;
+        if (unavailableDocumentLists) warnings.push(`Document counts are incomplete for ${unavailableDocumentLists} application(s).`);
+        if (unavailableFindingLists) warnings.push(`Finding counts are incomplete for ${unavailableFindingLists} application(s).`);
+        const assessmentItems = assessmentResult.status === 'fulfilled' ? assessmentResult.value : [];
+        const auditItems = auditResult.status === 'fulfilled' ? auditResult.value.items : [];
+        const openFindings = availableFindings.filter(finding => finding.status.toLowerCase() === 'open').length;
+        const pendingReviews = assessmentItems.filter(item =>
+          item.assigned_reviewer_id !== null
+          && !item.reviews.some(review => review.reviewer_id === item.assigned_reviewer_id),
+        ).length;
+        if (!cancelled) {
+          setApplications(items);
+          setDocuments(availableDocuments);
+          setAssessments(assessmentItems.slice(0, 8));
+          setAssessmentTotal(assessmentItems.length);
+          setOpenFindingCount(openFindings);
+          setPendingReviewCount(pendingReviews);
+          setAuditEvents(auditItems);
+          setPartialErrors(warnings);
+        }
+      })
       .catch(reason => {
         if (cancelled) return;
         if (reason instanceof ApiRequestError && reason.status === 401) {
@@ -426,7 +462,7 @@ function Dashboard() {
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [token, logout]);
+  }, [token, logout, refreshCount]);
 
   const metrics = [
     ['Accessible applications', applications.length, '/applications'],
@@ -434,6 +470,8 @@ function Dashboard() {
     ['Documents uploaded', documents.length, '/verification'],
     ['Documents processed', documents.filter(item => item.processing_status === 'completed').length, '/verification'],
     ['Assessment records', assessmentTotal, '/review-queue'],
+    ['Pending human reviews', pendingReviewCount, '/review-queue'],
+    ['Open findings', openFindingCount, '/applications'],
     ['Processing failures', documents.filter(item => item.processing_status === 'failed').length, '/verification'],
     ['Awaiting processing', documents.filter(item => item.processing_status === 'pending' || item.processing_status === 'processing').length, '/verification'],
     ['OCR unavailable', documents.filter(item => item.processing_status === 'ocr_unavailable').length, '/verification'],
@@ -442,7 +480,9 @@ function Dashboard() {
 
   return (
     <Shell title="Overview" liveData>
+      <div className="live-page-actions"><button className="button secondary" type="button" onClick={() => setRefreshCount(count => count + 1)} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh dashboard'}</button></div>
       {error && <div className="validation-error" role="alert"><AlertTriangle size={18} aria-hidden="true" />{error}</div>}
+      {partialErrors.length > 0 && !loading && <p className="validation-meta" role="status">Some dashboard data is incomplete: {partialErrors.join(' ')}</p>}
       {loading ? <section className="content-section" role="status">Loading accessible applications and document statuses…</section> : (
         <>
           {applications.length === 0 && <section className="content-section live-empty-state"><h2>No accessible applications</h2><p>The backend returned no applications for this account.</p><Link className="button primary" to="/applications">Open application register</Link></section>}

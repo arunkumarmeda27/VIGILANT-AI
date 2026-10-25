@@ -330,6 +330,7 @@ def test_assessment_assignment_and_append_only_review_are_authorized_and_audited
     assert client.post(assign_url, headers={"Authorization": f"Bearer {get_token(owner_email)}"}, json={"reviewer_id": reviewer_id}).status_code == 403
     assigned = client.post(assign_url, headers={"Authorization": f"Bearer {get_token(admin_email)}"}, json={"reviewer_id": reviewer_id})
     assert assigned.status_code == 200, assigned.text
+    assert assigned.json()["assigned_reviewer_id"] == reviewer_id
 
     detail_url = f"/api/compliance-assessments/{assessment_id}"
     reviewer_headers = {"Authorization": f"Bearer {get_token(reviewer_email)}"}

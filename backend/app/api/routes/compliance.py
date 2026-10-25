@@ -199,6 +199,7 @@ def assign_compliance_assessment(
     return {
         "id": assessment.id,
         "application_id": application.id,
+        "assigned_reviewer_id": reviewer.id,
         "application_reference": application.reference,
         "entity_name": application.entity_name,
         "rule_code": rule.rule_code,
@@ -262,6 +263,7 @@ def list_compliance_assessments(
         {
             "id": assessment.id,
             "application_id": application.id,
+            "assigned_reviewer_id": assessment.reviewer_id,
             "application_reference": application.reference,
             "entity_name": application.entity_name,
             "rule_code": rule.rule_code,

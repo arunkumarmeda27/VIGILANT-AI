@@ -219,6 +219,7 @@ class ComplianceAssessmentReviewOut(BaseModel):
 class ComplianceAssessmentOut(BaseModel):
     id: int
     application_id: int
+    assigned_reviewer_id: Optional[int]
     application_reference: str
     entity_name: str
     rule_code: str
