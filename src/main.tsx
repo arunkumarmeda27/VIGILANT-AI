@@ -4,6 +4,7 @@ import { BrowserRouter, Link, NavLink, Navigate, Route, Routes, useNavigate, use
 import { AlertTriangle, ArrowRight, ClipboardCheck, Database, Eye, EyeOff, FileCheck2, FileText, LayoutDashboard, ListChecks, Menu, Search, ShieldCheck, UserRound, XCircle, Lock, Mail, Loader2 } from 'lucide-react';
 import './styles.css';
 import './command.css';
+import { AssessmentReviewForm, validateAssessmentReviewNote, type AssessmentReviewOutcome } from './components/AssessmentReviewForm';
 
 // --- Types ---
 type DS = 'Not Submitted' | 'Received' | 'Validation Pending' | 'Verified' | 'Mismatch Detected' | 'Source Unavailable' | 'Manual Review Required';
@@ -1524,7 +1525,7 @@ function AssessmentReviewPage() {
   const [assessment, setAssessment] = useState<ComplianceAssessmentDetail | null>(null);
   const [reviewers, setReviewers] = useState<AssessmentReviewer[]>([]);
   const [reviewerId, setReviewerId] = useState('');
-  const [outcome, setOutcome] = useState<AssessmentReview['outcome']>('information_requested');
+  const [outcome, setOutcome] = useState<AssessmentReviewOutcome>('information_requested');
   const [note, setNote] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1567,7 +1568,8 @@ function AssessmentReviewPage() {
   const saveReview = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!token || savingRef.current) return;
-    if (!note.trim()) { setError('Add a reviewer note before recording this decision.'); return; }
+    const noteError = validateAssessmentReviewNote(note);
+    if (noteError) { setError(noteError); return; }
     savingRef.current = true;
     setSaving(true); setError(null); setNotice(null);
     try {
@@ -1630,14 +1632,7 @@ function AssessmentReviewPage() {
         </section>}
         {user?.role === 'REVIEWER' && assessment.assigned_reviewer_id === user.id && <section className="content-section assessment-decision-section">
           <Heading title="Record human decision" text="This decision is stored as an append-only reviewer record. It does not change the automated assessment or application status." />
-          <form className="application-form assessment-review-form" onSubmit={saveReview}>
-            <label htmlFor="assessment-outcome">Decision<select id="assessment-outcome" value={outcome} onChange={event => setOutcome(event.target.value as AssessmentReview['outcome'])}>
-              <option value="evidence_accepted">Accept evidence</option><option value="evidence_rejected">Reject evidence</option><option value="information_requested">Request additional information</option><option value="further_investigation">Mark for further investigation</option>
-            </select></label>
-            <label htmlFor="assessment-note">Reviewer note<textarea id="assessment-note" aria-describedby="assessment-note-help" required maxLength={2000} value={note} onChange={event => setNote(event.target.value)} /></label>
-            <small id="assessment-note-help" className="assessment-note-help">Required. Add the reason or requested follow-up (up to 2,000 characters). {note.length}/2000</small>
-            <button className="button primary" disabled={saving || !note.trim()}>{saving ? 'Saving…' : 'Record decision'}</button>
-          </form>
+          <AssessmentReviewForm outcome={outcome} note={note} saving={saving} onOutcomeChange={setOutcome} onNoteChange={setNote} onSubmit={saveReview} />
         </section>}
         {user?.role === 'REVIEWER' && assessment.assigned_reviewer_id !== user.id && <section className="content-section"><Heading title="Human decision" text="Decisions can be recorded only by the reviewer assigned to this assessment." /><p>This assessment is not assigned to your reviewer account. Ask an administrator to assign it before recording a decision.</p></section>}
         <section className="content-section">

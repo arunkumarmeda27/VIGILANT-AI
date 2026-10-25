@@ -28,6 +28,7 @@ This report reflects repository inspection and automated tests run during the cu
 - Isolated migration preservation tests: **3 passed**; existing assessment data was retained and the appended review table/FKs were verified.
 - Frontend `npm run lint`: **passed**.
 - Frontend `npm run build`: **passed**.
+- Frontend `npm test`: **6 passed** (Vitest + React Testing Library, reviewer decision form).
 - Python `compileall`: **passed**.
 - Python `compileall`: **passed**; `alembic heads`: **passed**, one code head `a71c9f4e2b36`.
 - `git diff --check`: rerun after the final edits and before handoff.
@@ -35,7 +36,7 @@ This report reflects repository inspection and automated tests run during the cu
 - No PostgreSQL, API, or Vite service was listening on local ports 5432, 8000, or 5173 at inspection time. The active database revision and live API behavior therefore remain **unverified**. Do not apply migrations until the intended database target is confirmed.
 - The full suite initially hung because the sandbox blocked the local socketpair that FastAPI TestClient's AnyIO portal uses. A faulthandler trace located the block in Windows asyncio's `_make_self_pipe`; running the same in-memory test suite with local IPC permission completed successfully.
 - Six backend test modules previously used SQLite files in the working directory and dropped their tables. Their test engines now use isolated in-memory SQLite with `StaticPool`; no user database or demo records were used by this run.
-- No browser or responsive viewport session was run. Build and lint passed, but actual page interaction and persisted application details against PostgreSQL remain manual verification.
+- No browser or responsive viewport session was run. Build, lint, and reviewer form component tests passed, but actual page interaction and persisted application details against PostgreSQL remain manual verification.
 - Regulatory evaluation does not infer application scope from the free-form `app_type`. Until verified scope facts and rule approval/currentness exist, candidate rule results remain `Not evaluated`; extracted values alone do not generate compliance findings.
 - No authorized AICTE or issuer-verification integration exists. Issuer verification remains disconnected; document classification, OCR, metadata, hash, and consistency results remain advisory and do not establish authenticity or fraud.
-- Nonnumeric illustrative dashboard/report/finding routes still show explicitly synthetic demo data. No frontend test runner or browser E2E suite is configured.
+- Nonnumeric illustrative dashboard/report/finding routes still show explicitly synthetic demo data. A component test runner is configured; no browser E2E suite is configured.

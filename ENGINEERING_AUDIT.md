@@ -17,6 +17,7 @@ This audit records repository findings and checks performed for the SIH26261 com
 | Medium | Application checklist results were returned only by a mutating `POST` operation that also created findings and audit events, so reports could not inspect checklist results without modifying application data. | Extracted a shared checklist evaluator and added an authorized read-only `GET /api/applications/{id}/checklist` preview. The existing POST still records deduplicated findings and its audit event; reports use GET and label the checklist as synthetic. |
 | Medium | The dashboard loaded applications, assessments, audit events, and every document list as one `Promise.all`, so one ancillary failure hid all otherwise available overview data. It also omitted findings and pending assigned reviews and offered no refresh action. | Dashboard loading now isolates ancillary results, clearly reports incomplete counts, counts open findings and assessments still awaiting the currently assigned reviewer, and exposes a refresh control. The pending count uses assigned reviewer IDs and each decision's reviewer ID, so a prior review by a different reviewer does not mark a reassigned task complete. |
 | Low | Audit history was paginated and role-scoped but had no search or filters. | Added bounded, server-side substring filtering by action and exact filtering by event type. These filters are applied after the existing access-scope constraints and before pagination/counting; the UI exposes filters and a no-match state. |
+| Low | The reviewer decision form was embedded in the assessment page, making its validation and interaction states hard to exercise independently. | Extracted the controlled form component, retained authenticated endpoint submission and page reload behavior, and added a Vitest/Testing Library suite for supported outcomes, note validation, keyboard submission, and disabled-in-flight state. |
 
 ## Workflow and authorization checks
 
@@ -31,10 +32,11 @@ This audit records repository findings and checks performed for the SIH26261 com
 - Backend full suite: **143 passed, 16 warnings**.
 - Frontend lint: **passed**.
 - Frontend production build (TypeScript + Vite): **passed**.
+- Frontend component tests: **6 passed** (Vitest + React Testing Library).
 - Python `compileall`: **passed**.
 - Alembic source heads: one head, `a71c9f4e2b36`.
 - The backend suite was run with test data isolated from the PostgreSQL configuration and project-local SQLite files.
-- No frontend test runner, browser E2E suite, running PostgreSQL service, or running API service was available. Browser behavior, live reviewer availability, live database migration state, and actual human review against persisted development data require manual verification.
+- No browser E2E suite, running PostgreSQL service, or running API service was available. Browser behavior, live reviewer availability, live database migration state, and actual human review against persisted development data require manual verification.
 
 ## Remaining limitations
 
