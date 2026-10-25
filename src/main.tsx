@@ -14,6 +14,7 @@ type Finding = { id: string; type: 'Cross-document discrepancy' | 'Potential ano
 type App = { id: string; institution: string; category: string; submitted: string; status: AS; reviewer: string; nextAction: string; documents: Doc[]; findings: Finding[] };
 type Audit = { id: string; applicationId: string; time: string; actor: string; action: string };
 type User = { id: number; full_name: string; email: string; role: string; is_active: boolean };
+type UserPage = { items: User[]; total: number; limit: number; offset: number };
 type EvidenceCitation = { source_document: string; pdf_page: number | string; printed_handbook_page: number | string; chunk_id: string };
 type AIEvidence = { text: string; source_text: string; evidence_type: string; retrieval_score: number | null; citation: EvidenceCitation };
 type AIWarning = { code: string; message: string; citations: EvidenceCitation[] };
@@ -1559,7 +1560,7 @@ function AssessmentReviewPage() {
           {reviewers.length ? <form className="assessment-assignment-form" onSubmit={assignReviewer}>
             <label>Reviewer<select required value={reviewerId} onChange={event => setReviewerId(event.target.value)}><option value="">Choose a reviewer</option>{reviewers.map(reviewer => <option key={reviewer.id} value={reviewer.id}>{reviewer.full_name} · {reviewer.email}</option>)}</select></label>
             <button className="button primary" disabled={saving || !reviewerId}>{saving ? 'Saving…' : 'Save assignment'}</button>
-          </form> : <div className="reviewer-empty-state"><p>No active reviewer accounts are available to assign. An administrator can create one with <code>POST /api/auth/users</code> and role <code>REVIEWER</code>, or activate an existing reviewer with <code>PATCH /api/auth/users/{'{user_id}'}</code>.</p><p>Use an administrator account and the backend API described in the README. Creating or changing an account is an explicit administrator action.</p></div>}
+          </form> : <div className="reviewer-empty-state"><p>No active reviewer accounts are available to assign. An administrator can create a separate reviewer account or activate an existing one in <Link to="/administration">Administration → User management</Link>.</p><p>Administrator accounts are not treated as reviewers. Account creation or activation requires a deliberate administrator action.</p></div>}
         </section>}
         {user?.role === 'REVIEWER' && assessment.assigned_reviewer_id === user.id && <section className="content-section assessment-decision-section">
           <Heading title="Record human decision" text="This decision is stored as an append-only reviewer record. It does not change the automated assessment or application status." />
@@ -2171,7 +2172,142 @@ function Report() { const { id = '' } = useParams(); const { apps } = useStore()
 
 function ReportRouteView() { const { id = '' } = useParams(); return /^\d+$/.test(id) ? <PersistedReport /> : <Report /> }
 
-function Admin() { const { user } = useAuth(); return <Shell title="Administration" liveData><section className="content-section"><Heading title="Signed-in account" text="Access is enforced by the backend for each request. Changing the displayed role cannot grant permissions." /><dl className="validation-rule-meta"><div><dt>Account</dt><dd>{user?.full_name} · {user?.email}</dd></div><div><dt>Server role</dt><dd>{user?.role}</dd></div><div><dt>Institution</dt><dd>{user?.role === 'ADMIN' ? 'Platform-wide administrative access' : 'Institution-scoped access; the signed-in account API does not provide an institution name.'}</dd></div></dl><div className="live-page-actions"><Link className="button secondary" to="/review-queue">Open persisted assessment review queue</Link><Link className="button secondary" to="/audit-trail">Open authorized audit history</Link></div><p className="validation-disclaimer">This prototype does not provide a live regulatory-rule configuration interface. Candidate rules remain subject to source, currentness, and applicability review.</p></section></Shell> }
+function Admin() {
+  const { token, user } = useAuth();
+  const [users, setUsers] = useState<User[]>([]);
+  const [totalUsers, setTotalUsers] = useState(0);
+  const [search, setSearch] = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
+  const [activeFilter, setActiveFilter] = useState('');
+  const [offset, setOffset] = useState(0);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [roleDrafts, setRoleDrafts] = useState<Record<number, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [savingId, setSavingId] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [newRole, setNewRole] = useState('REVIEWER');
+  const pageSize = 50;
+
+  useEffect(() => {
+    if (!token) return;
+    let current = true;
+    setLoading(true);
+    setError(null);
+    const params = new URLSearchParams({ limit: String(pageSize), offset: String(offset) });
+    if (search.trim()) params.set('search', search.trim());
+    if (roleFilter) params.set('role', roleFilter);
+    if (activeFilter) params.set('is_active', activeFilter);
+    void requestApi<UserPage>(`/api/auth/users?${params.toString()}`, token)
+      .then(page => {
+        if (!current) return;
+        setUsers(page.items);
+        setTotalUsers(page.total);
+        setRoleDrafts(Object.fromEntries(page.items.map(item => [item.id, item.role])));
+      })
+      .catch(cause => {
+        if (current) setError(cause instanceof Error ? cause.message : 'Could not load users.');
+      })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [token, search, roleFilter, activeFilter, offset, reloadKey]);
+
+  async function createUser(event: React.FormEvent) {
+    event.preventDefault();
+    if (!token) return;
+    if (!window.confirm(`Create ${newRole.replaceAll('_', ' ').toLowerCase()} account for ${email.trim()}?`)) return;
+    setError(null);
+    setNotice(null);
+    setSavingId(-1);
+    try {
+      await requestApi<User>('/api/auth/users', token, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ full_name: name.trim(), email: email.trim(), password, role: newRole }),
+      });
+      setName(''); setEmail(''); setPassword(''); setNewRole('REVIEWER'); setOffset(0);
+      setNotice('Account created. The password is not shown again.');
+      setReloadKey(value => value + 1);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not create this account.');
+    } finally { setSavingId(null); }
+  }
+
+  async function updateUser(account: User, changes: Partial<Pick<User, 'role' | 'is_active'>>) {
+    if (!token || savingId !== null) return;
+    const action = changes.is_active === false ? 'deactivate' : changes.is_active === true ? 'activate' : 'change this account role';
+    if (!window.confirm(`Are you sure you want to ${action} for ${account.full_name}?`)) return;
+    setError(null); setNotice(null); setSavingId(account.id);
+    try {
+      await requestApi<User>(`/api/auth/users/${account.id}`, token, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(changes),
+      });
+      setNotice(`Updated ${account.full_name}.`);
+      setReloadKey(value => value + 1);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : `Could not update ${account.full_name}.`);
+    } finally { setSavingId(null); }
+  }
+
+  return <Shell title="Administration" liveData>
+    <section className="content-section">
+      <Heading title="Signed-in account" text="Access is enforced by the backend for each request. Role changes here never replace server-side permission checks." />
+      <dl className="validation-rule-meta">
+        <div><dt>Account</dt><dd>{user?.full_name} · {user?.email}</dd></div>
+        <div><dt>Server role</dt><dd>{user?.role}</dd></div>
+        <div><dt>Access scope</dt><dd>Platform-wide administrator</dd></div>
+      </dl>
+      <div className="live-page-actions">
+        <Link className="button secondary" to="/review-queue">Open assessment review queue</Link>
+        <Link className="button secondary" to="/audit-trail">Open authorized audit history</Link>
+      </div>
+    </section>
+
+    <section className="content-section">
+      <Heading title="User management" text="Create accounts and manage roles or active status. Account changes are recorded in the audit history." />
+      {error && <p className="form-error" role="alert">{error}</p>}
+      {notice && <p className="admin-success" role="status">{notice}</p>}
+      <form className="admin-create-form" onSubmit={createUser}>
+        <label>Full name<input required maxLength={255} value={name} onChange={event => setName(event.target.value)} autoComplete="name" /></label>
+        <label>Email<input required type="email" value={email} onChange={event => setEmail(event.target.value)} autoComplete="email" /></label>
+        <label>Initial password<input required minLength={12} maxLength={1024} type="password" value={password} onChange={event => setPassword(event.target.value)} autoComplete="new-password" /><small>At least 12 non-whitespace characters.</small></label>
+        <label>Role<select value={newRole} onChange={event => setNewRole(event.target.value)}><option value="REVIEWER">Reviewer</option><option value="INSTITUTION_USER">Institution user</option><option value="ADMIN">Administrator</option></select></label>
+        <button className="button primary" type="submit" disabled={savingId !== null}>{savingId === -1 ? 'Creating…' : 'Create account'}</button>
+      </form>
+      <p className="admin-note">The password is sent once to the authenticated API and cleared after creation. This interface does not provide password reset or recovery.</p>
+
+      <div className="admin-filters" aria-label="Filter users">
+        <label>Search<input type="search" value={search} onChange={event => { setSearch(event.target.value); setOffset(0); }} placeholder="Name or email" /></label>
+        <label>Role<select value={roleFilter} onChange={event => { setRoleFilter(event.target.value); setOffset(0); }}><option value="">All roles</option><option value="ADMIN">Administrator</option><option value="REVIEWER">Reviewer</option><option value="INSTITUTION_USER">Institution user</option></select></label>
+        <label>Status<select value={activeFilter} onChange={event => { setActiveFilter(event.target.value); setOffset(0); }}><option value="">All statuses</option><option value="true">Active</option><option value="false">Inactive</option></select></label>
+      </div>
+      <p className="admin-result-count">{totalUsers} account{totalUsers === 1 ? '' : 's'}{search.trim() || roleFilter || activeFilter ? ' match these filters.' : ' in the directory.'}</p>
+      {loading ? <p role="status">Loading accounts…</p> : users.length ? <div className="table-wrap">
+        <table className="admin-user-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+          {users.map(account => <tr key={account.id}>
+            <td>{account.full_name}{account.id === user?.id ? ' (you)' : ''}</td><td>{account.email}</td>
+            <td><div className="admin-role-control"><select aria-label={`Role for ${account.full_name}`} disabled={account.id === user?.id} title={account.id === user?.id ? 'You cannot remove your own administrator role.' : undefined} value={roleDrafts[account.id] ?? account.role} onChange={event => setRoleDrafts(drafts => ({ ...drafts, [account.id]: event.target.value }))}><option value="ADMIN">Administrator</option><option value="REVIEWER">Reviewer</option><option value="INSTITUTION_USER">Institution user</option></select><button className="button secondary" type="button" disabled={savingId !== null || account.id === user?.id || (roleDrafts[account.id] ?? account.role) === account.role} onClick={() => void updateUser(account, { role: roleDrafts[account.id] })}>Save role</button></div></td>
+            <td><span className={`admin-user-status ${account.is_active ? 'active' : 'inactive'}`}>{account.is_active ? 'Active' : 'Inactive'}</span></td>
+            <td><button className="button secondary" type="button" disabled={savingId !== null || account.id === user?.id} title={account.id === user?.id ? 'You cannot deactivate your own account.' : undefined} onClick={() => void updateUser(account, { is_active: !account.is_active })}>{account.is_active ? 'Deactivate' : 'Activate'}</button></td>
+          </tr>)}
+        </tbody></table>
+      </div> : <p className="admin-empty">{search.trim() || roleFilter || activeFilter ? 'No accounts match these filters.' : 'No accounts are available.'}</p>}
+      <div className="admin-pagination"><button className="button secondary" type="button" disabled={loading || offset === 0} onClick={() => setOffset(Math.max(0, offset - pageSize))}>Previous</button><span>Showing {totalUsers ? offset + 1 : 0}–{Math.min(offset + users.length, totalUsers)} of {totalUsers}</span><button className="button secondary" type="button" disabled={loading || offset + users.length >= totalUsers} onClick={() => setOffset(offset + pageSize)}>Next</button></div>
+    </section>
+
+    <section className="content-section">
+      <Heading title="Reviewer access and system limits" text="Only active REVIEWER accounts can be assigned. Administrator access does not substitute for reviewer assignment." />
+      <p>Create or activate a reviewer above, then assign them to a specific assessment from its review page. When no active reviewer exists, create a separate account with the Reviewer role; administrator accounts are never treated as reviewers.</p>
+      <div className="live-page-actions"><Link className="button secondary" to="/review-queue">Manage assessment assignments</Link><Link className="button secondary" to="/audit-trail">Review audit history</Link></div>
+      <p className="validation-disclaimer">The health endpoint reports API process availability only. Database readiness and registry currentness are not exposed here. This prototype has no rule-configuration interface or password-recovery workflow.</p>
+    </section>
+  </Shell>;
+}
 
 function Login() {
   const nav = useNavigate();

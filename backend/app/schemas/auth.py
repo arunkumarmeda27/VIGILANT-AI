@@ -1,5 +1,6 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, ConfigDict, Field, field_validator
 from typing import Optional
+from app.models.enums import UserRole
 
 class Token(BaseModel):
     access_token: str
@@ -13,10 +14,27 @@ class UserLogin(BaseModel):
     password: str
 
 class UserCreate(BaseModel):
-    full_name: str
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str = Field(..., min_length=1, max_length=255)
     email: EmailStr
-    password: str
-    role: str
+    password: str = Field(..., max_length=1024)
+    role: UserRole
+
+    @field_validator("full_name")
+    @classmethod
+    def validate_full_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Full name cannot be blank")
+        return value
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_strength(cls, value: str) -> str:
+        if sum(not character.isspace() for character in value) < 12:
+            raise ValueError("Password must contain at least 12 non-whitespace characters")
+        return value
 
 class UserOut(BaseModel):
     id: int
@@ -29,6 +47,25 @@ class UserOut(BaseModel):
         from_attributes = True
 
 class UserUpdate(BaseModel):
-    full_name: Optional[str] = None
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: Optional[str] = Field(None, min_length=1, max_length=255)
     is_active: Optional[bool] = None
-    role: Optional[str] = None
+    role: Optional[UserRole] = None
+
+    @field_validator("full_name")
+    @classmethod
+    def validate_full_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("Full name cannot be blank")
+        return value
+
+
+class UserPageOut(BaseModel):
+    items: list[UserOut]
+    total: int
+    limit: int
+    offset: int

@@ -2,6 +2,7 @@ import copy
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 from app.main import app
@@ -15,11 +16,12 @@ from app.models.models import (
 from app.db.session import get_db as real_get_db
 from datetime import datetime, timezone
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///test_consistency_v2.db"
+SQLALCHEMY_DATABASE_URL = "sqlite://"
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
 )
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

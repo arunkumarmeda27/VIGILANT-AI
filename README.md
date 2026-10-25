@@ -54,30 +54,30 @@ PDF processing includes a conservative content-based document type suggestion. O
 
 ## Database setup
 
-From `C:\Users\ASUS-TUF\OneDrive\ドキュメント\Playground\VIGILANT-AI\backend`, after confirming the configured database target is the intended local development database:
+From the repository root, after confirming the configured database target is the intended local development database:
 
 ```powershell
+Set-Location .\backend
 .\venv\Scripts\python.exe -m alembic current
-.\venv\Scripts\python.exe -m alembic upgrade head
+.\venv\Scripts\python.exe -m alembic heads
 ```
 
-Do not run migrations against production or an unverified database. These commands apply schema migrations; they do not seed an application. Application creation should use the authenticated API. Test suites use isolated SQLite test databases and must not be pointed at the development PostgreSQL database.
+`alembic current` reports the configured database revision; `alembic heads` reports the repository migration head. Only after confirming the configured target is intended and reviewing pending migrations, an administrator can apply them with `.\venv\Scripts\python.exe -m alembic upgrade head` from `backend`. Never run migrations against production or an unverified database. Migrations do not seed application data. Application creation should use the authenticated API. Tests use isolated in-memory or temporary SQLite databases, not the configured PostgreSQL database.
 
-Pending migrations include the consistency-run migration, which backfills existing results into one legacy run per application, and the finding-review migration, which adds append-only reviewer decisions. Both preserve existing findings/results and have only been tested against isolated SQLite databases. Neither has been applied to an application database. The historical backfill cannot reconstruct validation attempts that older code had already overwritten.
+The repository migration head is `a71c9f4e2b36`. The consistency-run migration backfills existing results into one legacy run per application; the finding-review and assessment-review migrations add separate append-only decision histories. The historical backfill cannot reconstruct validation attempts that older code had already overwritten. The live database revision is environment-dependent and must be verified with `alembic current`; repository state alone does not prove a database has been upgraded.
 
 ## Start locally
 
-Terminal 1, backend:
+Open both terminals at the repository root. Terminal 1, backend:
 
 ```powershell
-Set-Location 'C:\Users\ASUS-TUF\OneDrive\ドキュメント\Playground\VIGILANT-AI\backend'
+Set-Location .\backend
 .\venv\Scripts\python.exe -m uvicorn app.main:app --reload
 ```
 
 Terminal 2, frontend:
 
 ```powershell
-Set-Location 'C:\Users\ASUS-TUF\OneDrive\ドキュメント\Playground\VIGILANT-AI'
 npm run dev
 ```
 
@@ -114,7 +114,7 @@ On a persisted application detail page, authorized users can run the category ch
 
 ### Reviewer accounts and assessment review
 
-Reviewer assignment requires an active account whose role is exactly `REVIEWER`. An administrator can create an account through the existing authenticated `POST /api/auth/users` endpoint with `full_name`, `email`, a securely chosen `password`, and `role: "REVIEWER"`. To activate an existing reviewer, use administrator-only `PATCH /api/auth/users/{user_id}` with `{"is_active": true}`; the endpoint also supports correcting its role to `REVIEWER` when authorized. Use the existing account ID from your administrator records when updating an account; this API does not provide a user-list endpoint. These account-management calls require an administrator bearer token. No reviewer is provisioned automatically. The assessment page lists only active reviewer accounts and explains this workflow when none are available.
+Reviewer assignment requires an active account whose role is exactly `REVIEWER`. Administrators can search/filter the persisted user directory and create or update accounts from Administration → User management; account creation requires a password with at least 12 non-whitespace characters, the page does not display passwords, and it clears the initial-password field after account creation. The authenticated API also provides `GET /api/auth/users` (admin-only, paginated) alongside `POST /api/auth/users` and `PATCH /api/auth/users/{user_id}`. No reviewer is provisioned automatically. The assessment page lists only active reviewer accounts and links to user management when none are available.
 
 After an administrator assigns an assessment, the assigned reviewer can record a decision from its Assessment Review page. Each decision is retained as an append-only history entry with reviewer identity, outcome, note, and timestamp; recording a decision does not alter the automated assessment or application approval status.
 

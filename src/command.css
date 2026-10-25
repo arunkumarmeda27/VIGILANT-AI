@@ -196,3 +196,24 @@ input:not([type=checkbox]):not([type=radio]):focus,select:focus,textarea:focus{b
 .report-audit-event{grid-template-columns:minmax(0,1fr) auto;align-items:center}
 .report-audit-event small{grid-column:1/-1}
 @media(max-width:560px){.report-audit-event{grid-template-columns:1fr}.report-audit-event small{grid-column:auto}}
+
+.admin-create-form{display:grid;grid-template-columns:1.2fr 1.3fr 1.3fr 1fr auto;gap:12px;align-items:end;margin-top:16px}
+.admin-create-form label,.admin-filters label{display:grid;gap:6px;margin:0;color:#344054;font-size:12px;font-weight:600}
+.admin-create-form input,.admin-create-form select,.admin-filters input,.admin-filters select,.admin-role-control select{width:100%;min-width:0;height:40px;padding:0 10px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#182230}
+.admin-create-form .button{height:40px}
+.admin-note,.admin-result-count,.admin-pagination{color:#667085;font-size:12px}
+.admin-filters{display:flex;flex-wrap:wrap;gap:12px;margin:20px 0 12px}
+.admin-filters label{min-width:170px;flex:1}
+.admin-user-table{min-width:920px}
+.admin-user-table td{white-space:normal;vertical-align:middle}
+.admin-role-control{display:flex;align-items:center;gap:7px;min-width:245px}
+.admin-role-control select{flex:1}
+.admin-role-control .button,.admin-user-table td>.button{padding:8px 10px;font-size:12px}
+.admin-user-status{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:650}
+.admin-user-status.active{color:#05603a;background:#eaf7ef}
+.admin-user-status.inactive{color:#667085;background:#f2f4f7}
+.admin-success{padding:10px 12px;border:1px solid #abefc6;border-radius:6px;background:#ecfdf3;color:#067647;font-size:13px}
+.admin-pagination{display:flex;justify-content:flex-end;align-items:center;gap:12px;margin-top:16px}
+.admin-empty{padding:18px;border:1px dashed #d0d5dd;border-radius:6px;color:#667085;text-align:center}
+@media(max-width:1100px){.admin-create-form{grid-template-columns:repeat(2,minmax(0,1fr))}.admin-create-form .button{justify-self:start}}
+@media(max-width:620px){.admin-create-form{grid-template-columns:1fr}.admin-filters{display:grid;grid-template-columns:1fr}.admin-pagination{justify-content:space-between}.admin-role-control{min-width:230px}}

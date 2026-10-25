@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import json
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from app.db.session import get_db
-from app.models.models import User
+from app.models.models import AuditEvent, User
 from app.core.security import verify_password, create_access_token
-from app.schemas.auth import Token, UserLogin, UserOut, UserCreate, UserUpdate
+from app.schemas.auth import Token, UserLogin, UserOut, UserCreate, UserUpdate, UserPageOut
 from app.api.deps import get_current_user, RoleChecker
 from app.models.enums import UserRole
 
@@ -37,6 +39,30 @@ def login(login_data: UserLogin, db: Session = Depends(get_db)):
 def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
+
+@router.get("/users", response_model=UserPageOut)
+def list_users(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    search: str | None = Query(default=None, max_length=120),
+    role: UserRole | None = None,
+    is_active: bool | None = None,
+    db: Session = Depends(get_db),
+    admin: User = Depends(RoleChecker([UserRole.ADMIN])),
+):
+    query = db.query(User)
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter((User.full_name.ilike(term)) | (User.email.ilike(term)))
+    if role is not None:
+        query = query.filter(User.role == role.value)
+    if is_active is not None:
+        query = query.filter(User.is_active.is_(is_active))
+
+    total = query.count()
+    users = query.order_by(User.full_name, User.id).offset(offset).limit(limit).all()
+    return {"items": users, "total": total, "limit": limit, "offset": offset}
+
 @router.post("/users", response_model=UserOut)
 def create_user(
     user_in: UserCreate,
@@ -60,8 +86,20 @@ def create_user(
         is_active=True
     )
     db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
+    try:
+        db.flush()
+        db.add(AuditEvent(
+            user_id=admin.id,
+            action="user.created",
+            entity_type="user",
+            entity_id=str(new_user.id),
+            audit_metadata=json.dumps({"changed_fields": ["full_name", "email", "role", "is_active"]}),
+        ))
+        db.commit()
+        db.refresh(new_user)
+    except Exception:
+        db.rollback()
+        raise
     return new_user
 
 @router.patch("/users/{user_id}", response_model=UserOut)
@@ -75,9 +113,34 @@ def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    for key, value in user_update.model_dump(exclude_unset=True).items():
-        setattr(user, key, value)
+    updates = user_update.model_dump(exclude_unset=True)
+    if user.id == admin.id:
+        if updates.get("is_active") is False:
+            raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
+        if "role" in updates and updates["role"] != UserRole.ADMIN:
+            raise HTTPException(status_code=400, detail="You cannot remove your own administrator role")
 
-    db.commit()
-    db.refresh(user)
+    changed_fields = []
+    for key, value in updates.items():
+        if hasattr(value, "value"):
+            value = value.value
+        if getattr(user, key) != value:
+            setattr(user, key, value)
+            changed_fields.append(key)
+
+    if changed_fields:
+        db.add(AuditEvent(
+            user_id=admin.id,
+            action="user.updated",
+            entity_type="user",
+            entity_id=str(user.id),
+            audit_metadata=json.dumps({"changed_fields": changed_fields}),
+        ))
+
+    try:
+        db.commit()
+        db.refresh(user)
+    except Exception:
+        db.rollback()
+        raise
     return user
