@@ -627,4 +627,12 @@ def test_audit_history_supports_bounded_pagination():
     assert response.json()["limit"] == 1
     assert len(response.json()["items"]) == 1
     assert response.json()["total"] == 1
+    filtered = client.get(
+        "/api/audit-events/?action=created&entity_type=application",
+        headers=headers,
+    )
+    assert filtered.status_code == 200
+    assert filtered.json()["total"] == 1
+    assert filtered.json()["items"][0]["action"] == "application.created"
+    assert client.get(f"/api/audit-events/?action={'a' * 121}", headers=headers).status_code == 422
     assert client.get("/api/audit-events/?limit=201", headers=headers).status_code == 422

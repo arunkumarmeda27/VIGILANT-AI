@@ -1369,6 +1369,10 @@ function GlobalAudit() {
   const { token, logout } = useAuth();
   const [page, setPage] = useState<AuditEventPage | null>(null);
   const [offset, setOffset] = useState(0);
+  const [actionDraft, setActionDraft] = useState('');
+  const [actionFilter, setActionFilter] = useState('');
+  const [entityTypeDraft, setEntityTypeDraft] = useState('');
+  const [entityTypeFilter, setEntityTypeFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const pageSize = 50;
@@ -1381,7 +1385,10 @@ function GlobalAudit() {
       setLoading(false);
       return () => { cancelled = true; };
     }
-    requestApi<AuditEventPage>(`/api/audit-events/?limit=${pageSize}&offset=${offset}`, token)
+    const params = new URLSearchParams({ limit: String(pageSize), offset: String(offset) });
+    if (actionFilter) params.set('action', actionFilter);
+    if (entityTypeFilter) params.set('entity_type', entityTypeFilter);
+    requestApi<AuditEventPage>(`/api/audit-events/?${params.toString()}`, token)
       .then(result => { if (!cancelled) setPage(result); })
       .catch(reason => {
         if (cancelled) return;
@@ -1394,13 +1401,36 @@ function GlobalAudit() {
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [token, logout, offset]);
+  }, [token, logout, offset, actionFilter, entityTypeFilter]);
+
+  const applyFilters = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setOffset(0);
+    setActionFilter(actionDraft.trim());
+    setEntityTypeFilter(entityTypeDraft);
+  };
+
+  const clearFilters = () => {
+    setOffset(0);
+    setActionDraft('');
+    setActionFilter('');
+    setEntityTypeDraft('');
+    setEntityTypeFilter('');
+  };
 
   return (
     <Shell title="Audit History" liveData>
       <section className="content-section">
         <Heading title="Authorized audit events" text="Events are filtered by server-side role and application access. Sensitive values and document contents are not included." />
         {error && <div className="validation-error" role="alert"><AlertTriangle size={18} aria-hidden="true" />{error}</div>}
+        <form className="audit-filter-form" onSubmit={applyFilters}>
+          <label>Action contains<input value={actionDraft} onChange={event => setActionDraft(event.target.value)} maxLength={120} placeholder="e.g. review_recorded" /></label>
+          <label>Event type<select value={entityTypeDraft} onChange={event => setEntityTypeDraft(event.target.value)}>
+            <option value="">All event types</option><option value="application">Application</option><option value="document">Document</option><option value="compliance_assessment">Compliance assessment</option><option value="finding">Finding</option><option value="institution">Institution</option><option value="user">User</option>
+          </select></label>
+          <button className="button secondary" type="submit" disabled={loading}>Apply filters</button>
+          <button className="button secondary" type="button" onClick={clearFilters} disabled={loading || (!actionDraft && !entityTypeDraft && !actionFilter && !entityTypeFilter)}>Clear</button>
+        </form>
         {loading ? <p role="status">Loading audit history…</p> : page?.items.length ? (
           <>
             <div className="audit-event-list">
@@ -1424,7 +1454,7 @@ function GlobalAudit() {
               <button className="button secondary" aria-label="Next audit history page" disabled={loading || offset + pageSize >= page.total} onClick={() => setOffset(offset + pageSize)}>Next</button>
             </div>
           </>
-        ) : <p className="validation-meta">No audit events are available to this account.</p>}
+        ) : <p className="validation-meta">{actionFilter || entityTypeFilter ? 'No audit events match these filters.' : 'No audit events are available to this account.'}</p>}
       </section>
     </Shell>
   );

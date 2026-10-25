@@ -65,6 +65,8 @@ def list_audit_events(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     application_id: int | None = Query(default=None, gt=0),
+    action: str | None = Query(default=None, max_length=120),
+    entity_type: str | None = Query(default=None, max_length=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -130,6 +132,12 @@ def list_audit_events(
                 (AuditEvent.entity_type == "compliance_assessment") & AuditEvent.entity_id.in_(application_assessment_ids),
             )
         )
+
+    if action and action.strip():
+        escaped_action = action.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.filter(AuditEvent.action.ilike(f"%{escaped_action}%", escape="\\"))
+    if entity_type and entity_type.strip():
+        query = query.filter(AuditEvent.entity_type == entity_type.strip())
 
     total = query.count()
     rows = (

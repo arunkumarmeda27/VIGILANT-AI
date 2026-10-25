@@ -109,6 +109,10 @@
 .integrity-preview h4{margin:0 0 10px;color:#10233f}
 .integrity-preview p{margin:7px 0;color:#475467;font-size:12px;line-height:1.55;overflow-wrap:anywhere}
 .audit-event-list{display:grid;gap:11px}
+.audit-filter-form{display:grid;grid-template-columns:minmax(220px,1fr) minmax(190px,.7fr) auto auto;align-items:end;gap:12px;margin:18px 0}
+.audit-filter-form label{display:grid;gap:6px;color:#344054;font-size:12px;font-weight:600}
+.audit-filter-form input,.audit-filter-form select{width:100%;min-width:0;min-height:40px;padding:8px 10px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#182230;font:inherit}
+.audit-filter-form input:focus-visible,.audit-filter-form select:focus-visible{outline:3px solid #8ad5d0;outline-offset:1px;border-color:#26708a}
 .audit-event-card{padding:14px;border:1px solid #e4e7ec;border-radius:7px;background:#fff}
 .audit-event-card>div:first-child{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .audit-event-card p,.audit-event-card time{display:block;margin:7px 0 0;color:#667085;font-size:12px}
@@ -129,6 +133,8 @@
 .reviewer-empty-state code{overflow-wrap:anywhere}
 .content-section time{display:block;margin-top:7px;color:#667085;font-size:12px}
 @media(max-width:620px){.assessment-assignment-form{grid-template-columns:1fr}.assessment-assignment-form .button{justify-self:start}}
+@media(max-width:760px){.audit-filter-form{grid-template-columns:1fr 1fr}.audit-filter-form .button{justify-self:start}}
+@media(max-width:480px){.audit-filter-form{grid-template-columns:1fr}}
 @media(max-width:620px){.institution-create-form{grid-template-columns:1fr}.audit-event-card>div:first-child{align-items:flex-start;flex-direction:column}}
 .live-application-select select,.live-upload-form select,.live-upload-form input{min-width:0;min-height:40px;padding:8px 10px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#182230;font:inherit}
 .live-upload-form{display:grid;grid-template-columns:minmax(180px,.7fr) minmax(240px,1.3fr) auto;align-items:end;gap:14px;margin-top:16px}
