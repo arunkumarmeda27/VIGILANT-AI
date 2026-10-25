@@ -315,7 +315,7 @@ def test_unchanged_application_update_does_not_create_a_changed_fields_audit_eve
         ).count() == 0
 
 
-def test_reviewer_cannot_update_application_fields_other_than_status():
+def test_reviewer_cannot_update_application_fields_or_status():
     reviewer_email = create_test_user("restricted-reviewer@example.com", UserRole.REVIEWER)
     with TestingSessionLocal() as session:
         reviewer_id = session.query(User.id).filter_by(email=reviewer_email).scalar()
@@ -355,7 +355,17 @@ def test_reviewer_cannot_update_application_fields_other_than_status():
         headers={"Authorization": f"Bearer {get_token(reviewer_email)}"},
     )
     assert response.status_code == 403
-    assert response.json()["detail"] == "Reviewers can update application status only"
+    assert response.json()["detail"] == "Not authorized to update applications"
+
+    status_response = client.patch(
+        f"/api/applications/{application_id}",
+        json={"status": "approved"},
+        headers={"Authorization": f"Bearer {get_token(reviewer_email)}"},
+    )
+    assert status_response.status_code == 403
+    assert status_response.json()["detail"] == "Not authorized to update applications"
+
+
 def test_institution_user_cannot_change_application_status():
     session = TestingSessionLocal()
     inst = Institution(name="Status Institution")
@@ -382,6 +392,36 @@ def test_institution_user_cannot_change_application_status():
     )
 
     assert response.status_code == 403
+
+
+def test_admin_cannot_change_application_status_through_free_text_update():
+    admin_email = create_test_user("status-admin@example.com", UserRole.ADMIN)
+    session = TestingSessionLocal()
+    institution = Institution(name="Admin Status Institution")
+    session.add(institution)
+    session.flush()
+    application = Application(
+        reference="ADMIN-STATUS-REF",
+        entity_name="Admin Status Entity",
+        app_type="Demonstration",
+        institution_id=institution.id,
+    )
+    session.add(application)
+    session.commit()
+    application_id = application.id
+    session.close()
+
+    response = client.patch(
+        f"/api/applications/{application_id}",
+        json={"status": "approved"},
+        headers={"Authorization": f"Bearer {get_token(admin_email)}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Application status changes are not supported by this endpoint"
+    with TestingSessionLocal() as session:
+        assert session.query(Application).filter_by(id=application_id).one().status == "submitted"
+
 
 def test_invalid_payload_rejected():
     user_email = create_test_user()

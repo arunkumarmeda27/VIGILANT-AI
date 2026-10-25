@@ -5,7 +5,7 @@ This report reflects repository inspection and automated tests run during the cu
 | Feature | Status | Files/coverage | Limitations and manual verification |
 | --- | --- | --- | --- |
 | Authenticated application lifecycle | Implemented and tested | `backend/app/api/routes/applications.py`, `backend/app/api/routes/institutions.py`, `backend/app/schemas/applications.py`, application/ownership tests, live pages in `src/main.tsx` | API creates with a client-supplied unique reference; backend sets initial status. Institution users derive ownership from their account. Administrators select an institution; institution creation does not automatically assign users. |
-| Live application dashboard, list, detail, create and update | Implemented and tested | `src/main.tsx`, `src/styles.css`; backend lifecycle tests | TypeScript/build/lint and backend tests pass. Browser/manual interaction and live PostgreSQL requests were not run. |
+| Live application dashboard, list, detail, create and update | Implemented and tested | `src/main.tsx`, `src/styles.css`; backend lifecycle tests | Application status is read-only because there is no controlled lifecycle transition workflow. TypeScript/build/lint and backend tests pass. Browser/manual interaction and live PostgreSQL requests were not run. |
 | PDF upload, extraction, OCR and type suggestion | Implemented and tested | `backend/app/services/documents.py`, `backend/app/services/document_processing.py`, `backend/app/services/document_classification.py`, `data/processed/document_categories.json`, `backend/tests/test_documents.py` | Classification suggestions match configured signals in extracted page text and show evidence. Weak, tied, or absent matches require manual classification; the submitted type is not changed. OCR depends on Tesseract. Extracted values remain unverified. |
 | Synthetic PDF demonstration input | Implemented and tested | `backend/create_synthetic_demo_pdf.py` | Local extraction verified; generator refuses to overwrite. The sample is conspicuously fictional and has no legal/issuer status. |
 | Fire Safety preview rules | Implemented and tested | `backend/app/services/regulatory_validation.py`, `data/processed/regulatory_rules/fire_safety_preview_registry.json`, `backend/tests/test_regulatory_validation.py` | Candidate rules remain disabled absent source, currentness, applicability and explicit approval. No current-law determination or final compliance result. |
@@ -24,7 +24,7 @@ This report reflects repository inspection and automated tests run during the cu
 
 ## Latest verification and outstanding database issue
 
-- Full backend suite: **141 passed, 16 warnings** using isolated in-memory and temporary SQLite fixtures.
+- Full backend suite: **142 passed, 16 warnings** using isolated in-memory and temporary SQLite fixtures.
 - Isolated migration preservation tests: **3 passed**; existing assessment data was retained and the appended review table/FKs were verified.
 - Frontend `npm run lint`: **passed**.
 - Frontend `npm run build`: **passed**.

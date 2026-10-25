@@ -1325,7 +1325,6 @@ def update_application(
 ):
     if current_user.role not in {
         UserRole.INSTITUTION_USER.value,
-        UserRole.REVIEWER.value,
         UserRole.ADMIN.value,
     }:
         raise HTTPException(
@@ -1341,23 +1340,12 @@ def update_application(
     if current_user.role == UserRole.INSTITUTION_USER:
         if current_user.institution_id is None or app_obj.institution_id != current_user.institution_id:
             raise HTTPException(status_code=404, detail="Application not found")
-    elif current_user.role == UserRole.REVIEWER:
-        L_assessment = db.query(ComplianceAssessment).filter(
-            ComplianceAssessment.application_id == application_id,
-            ComplianceAssessment.reviewer_id == current_user.id
-        ).first()
-        if not L_assessment:
-            raise HTTPException(status_code=403, detail="Not authorized to update this application")
-
     update_data = application_in.model_dump(exclude_unset=True)
-    if current_user.role == UserRole.INSTITUTION_USER.value and "status" in update_data:
+    if "status" in update_data:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Institution users cannot change application status",
+            detail="Application status changes are not supported by this endpoint",
         )
-    if current_user.role == UserRole.REVIEWER.value and set(update_data) - {"status"}:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Reviewers can update application status only")
     changed_data = {
         field: value
         for field, value in update_data.items()

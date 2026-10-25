@@ -12,6 +12,7 @@ This audit records repository findings and checks performed for the SIH26261 com
 | Medium | TestClient stalled in the restricted Windows sandbox before completing even the health request. | A faulthandler trace showed asyncio stuck in Windows `ProactorEventLoop._make_self_pipe` while creating the local socketpair AnyIO needs for TestClient. The suite passed when run with local IPC permission; this was environmental, not an application route deadlock. |
 | Medium | Live service and database state cannot be established from repository-only checks. | No process was listening locally on ports 5432, 8000, or 5173 during this pass. The repository Alembic head is `a71c9f4e2b36`; `alembic current` against the intended database was not verified. No migration was run and no database record was created or changed. |
 | Low | Existing nonnumeric illustrative dashboard, finding, and report routes contain synthetic demo records. | Existing UI labels them as illustrative/simulated. They remain outside the persisted numeric application workflow and are listed as a limitation in [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md). |
+| High | The persisted application update endpoint allowed assigned reviewers to edit application status, and both reviewers and administrators had a free-text status field. This could let an assessment review alter the application lifecycle without a controlled transition workflow. | Removed status editing from the application detail UI and API update operation. Reviewer decisions remain append-only assessment/finding review records and cannot alter application status. Status remains visible and can only be changed once a validated lifecycle workflow is implemented. |
 
 ## Workflow and authorization checks
 
@@ -23,7 +24,7 @@ This audit records repository findings and checks performed for the SIH26261 com
 
 ## Verification
 
-- Backend full suite: **141 passed, 16 warnings**.
+- Backend full suite: **142 passed, 16 warnings**.
 - Frontend lint: **passed**.
 - Frontend production build (TypeScript + Vite): **passed**.
 - Python `compileall`: **passed**.

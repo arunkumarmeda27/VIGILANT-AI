@@ -896,7 +896,6 @@ function PersistedApplicationDetail() {
   const [notice, setNotice] = useState<string | null>(null);
   const [entityName, setEntityName] = useState('');
   const [appType, setAppType] = useState('');
-  const [status, setStatus] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -917,7 +916,6 @@ function PersistedApplicationDetail() {
       setApplication(app);
       setEntityName(app.entity_name);
       setAppType(app.app_type);
-      setStatus(app.status || '');
       setDocuments(docs);
       setConsistencyRuns(history.items);
       setFindings(persistedFindings);
@@ -1030,7 +1028,6 @@ function PersistedApplicationDetail() {
       setApplication(updated);
       setEntityName(updated.entity_name);
       setAppType(updated.app_type);
-      setStatus(updated.status || '');
       setNotice('Application details updated.');
     } catch (reason) {
       if (reason instanceof ApiRequestError && reason.status === 401) {
@@ -1045,7 +1042,6 @@ function PersistedApplicationDetail() {
   };
 
   const canEditDetails = user?.role === 'ADMIN' || user?.role === 'INSTITUTION_USER';
-  const canEditStatus = user?.role === 'ADMIN' || user?.role === 'REVIEWER';
   if (loading) return <Shell title="Application details" liveData><p role="status">Loading application…</p></Shell>;
   if (!application && !error) return <Navigate to="/applications" replace />;
   return (
@@ -1142,15 +1138,12 @@ function PersistedApplicationDetail() {
               </article>
             )) : <p className="validation-meta">No cross-document validation runs have been recorded for this application.</p>}
           </section>
-          {(canEditDetails || canEditStatus) && (
+          {canEditDetails && (
             <section className="content-section">
-              <Heading title="Update application" text="The backend enforces which fields your role may change." />
+              <Heading title="Update application" text="The backend enforces which fields your role may change. Application status is read-only until a controlled status workflow is available." />
               <form className="application-form live-application-form" onSubmit={update}>
-                {canEditDetails && <>
-                  <label>Institution or organization name<input value={entityName} onChange={event => setEntityName(event.target.value)} maxLength={255} required /></label>
-                  <label>Application type<input value={appType} onChange={event => setAppType(event.target.value)} maxLength={100} required /></label>
-                </>}
-                {canEditStatus && <label>Application status<input value={status} onChange={event => setStatus(event.target.value)} maxLength={50} required /></label>}
+                <label>Institution or organization name<input value={entityName} onChange={event => setEntityName(event.target.value)} maxLength={255} required /></label>
+                <label>Application type<input value={appType} onChange={event => setAppType(event.target.value)} maxLength={100} required /></label>
                 {error && <div className="validation-error" role="alert">{error}</div>}
                 {notice && <p role="status" className="validation-meta">{notice}</p>}
                 <button className="button primary" type="submit" disabled={saving}>
