@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "scripts": { "dev": "vite", "dev:public": "vite --host 0.0.0.0 --port 5173", "build": "tsc -b && vite build", "lint": "eslint .", "test": "vitest run", "preview": "vite preview", "preview:public": "vite preview --host 0.0.0.0 --port 4173" },
-  "dependencies": { "@vitejs/plugin-react": "latest", "lucide-react": "latest", "react": "latest", "react-dom": "latest", "react-router-dom": "latest" },
-  "devDependencies": { "@eslint/js": "latest", "@types/node": "latest", "@types/react": "latest", "@types/react-dom": "latest", "eslint": "latest", "eslint-plugin-react-hooks": "latest", "eslint-plugin-react-refresh": "latest", "typescript": "latest", "typescript-eslint": "latest", "vite": "latest", "vitest": "latest" }
+  "scripts": { "dev": "vite", "dev:api": "tsx server/index.ts", "dev:public": "vite --host 0.0.0.0 --port 5173", "build": "tsc -b && tsc -p tsconfig.server.json && vite build", "lint": "eslint .", "test": "vitest run", "preview": "vite preview", "preview:public": "vite preview --host 0.0.0.0 --port 4173" },
+  "dependencies": { "@vitejs/plugin-react": "latest", "express": "latest", "lucide-react": "latest", "react": "latest", "react-dom": "latest", "react-router-dom": "latest", "zod": "latest" },
+  "devDependencies": { "@eslint/js": "latest", "@types/express": "latest", "@types/node": "latest", "@types/react": "latest", "@types/react-dom": "latest", "@types/supertest": "latest", "eslint": "latest", "eslint-plugin-react-hooks": "latest", "eslint-plugin-react-refresh": "latest", "supertest": "latest", "tsx": "latest", "typescript": "latest", "typescript-eslint": "latest", "vite": "latest", "vitest": "latest" }
 }

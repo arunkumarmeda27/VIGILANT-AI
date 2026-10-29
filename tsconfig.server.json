@@ -1,0 +1,1 @@
+{ "compilerOptions": { "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext", "strict": true, "esModuleInterop": true, "skipLibCheck": true, "outDir": "server-dist", "types": ["node"] }, "include": ["server/**/*.ts", "src/domain/validation.ts"], "exclude": ["server/**/*.test.ts"] }

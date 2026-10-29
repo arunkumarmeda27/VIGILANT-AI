@@ -11,6 +11,12 @@ npm run dev
 
 Build the production bundle with `npm run build` and run the available lint check with `npm run lint`.
 
+## Development validation API
+
+`npm run dev:api` starts a local API on port 3000. It persists only application metadata and validation-run JSON under `.data/`, which is intentionally ignored by Git. The API requires a trusted upstream identity gateway in production. For local tests only, requests use an `x-vigilant-actor` JSON header; this header is not authentication and must never be exposed directly to the internet.
+
+The API accepts document metadata, not binary document content. It validates filenames, MIME type and declared size before creating a deterministic validation run. Issuer checks and regulatory evaluation are correctly returned as unavailable or skipped until authorized adapters and datasets are supplied.
+
 ## Share a demo with ngrok
 
 VIGILANT AI accepts an ngrok hostname only when it is supplied at runtime. No ngrok credential or public URL is stored in the project.

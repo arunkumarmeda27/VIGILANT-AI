@@ -4,14 +4,14 @@ Audit date: 2026-10-29. The checkout is a Vite/React frontend demonstration. It 
 
 | Issues | Verified status | This change | Remaining dependency |
 | --- | --- | --- | --- |
-| #1, #7, #8, #10 | Partially implemented | Deterministic orchestration, conflict/duplicate indicators, stage results, and source references in `src/domain/validation.ts` | Persisted runs, real file processing, API integration |
+| #1, #7, #8, #10 | Partially implemented | Deterministic orchestration, conflict/duplicate indicators, stage results, source references, and local persisted validation runs | Binary file storage, immutable evidence, real file processing, frontend API integration |
 | #2 | Partially implemented | Versioned active schemas and normalization | Authorized registry administration and persistence |
 | #3, #9, #17 | Missing | Explicit unsupported/inconclusive results; no AI claims | OCR/model adapters, licensed data, evaluated model weights |
 | #4 | Blocked externally | `UNAVAILABLE` issuer status; no false verification success | Authorized issuer and cryptographic-verification providers |
 | #5, #6 | Blocked externally | Regulatory stage is explicitly skipped | Versioned, approved corpus and rule ownership |
 | #11, #12 | Partially implemented | Review-required findings can be produced by the core | Backend review decisions, notifications, persisted reporting |
 | #13 | Missing | Repeatable unit tests for the deterministic baseline | Authorized labelled benchmark dataset and measurement process |
-| #14 | Partially implemented | Institution guard helper | Server-enforced authentication, authorization, storage and rate limiting |
+| #14 | Partially implemented | Institution-scoped API checks, request validation, size/type/filename checks, and safe error responses | Real identity gateway, server-enforced authentication, binary storage scanning, rate limiting and secrets management |
 | #15 | Partially implemented | Vitest coverage and GitHub Actions CI | API/E2E test environment |
 | #16, #18 | Missing | None—no deployable backend exists | Hosting, monitoring, queue/storage design and load tests |
 | #19 | Partially implemented | Existing responsive/focus styles remain intact | User accessibility testing and semantic audit |
