@@ -1,0 +1,18 @@
+{
+  "config_version": 1,
+  "disclosure": "Synthetic demonstration categories. Text matching suggests a type and does not establish authenticity.",
+  "categories": [
+    {
+      "document_type": "fire_safety_certificate",
+      "signals": ["fire safety certificate", "fire clearance certificate", "fire department", "fire and emergency services"]
+    },
+    {
+      "document_type": "faculty_qualification_certificate",
+      "signals": ["faculty qualification", "educational qualification", "degree certificate", "university transcript"]
+    },
+    {
+      "document_type": "accreditation_certificate",
+      "signals": ["accreditation certificate", "national board of accreditation", "nba accreditation", "naac accreditation"]
+    }
+  ]
+}

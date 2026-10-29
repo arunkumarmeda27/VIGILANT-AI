@@ -1,0 +1,177 @@
+ANNEXURE-4 
+Norms for Books, Library facilities, Computer, Software, Internet 
+and Laboratory Equipment of the Technical Institutions
+4.1	 Computers,	Software	and	Internet  
+ 
+Programme Level Number of PCs/ Laptop to student ratio (Minimum 20 PCs)
+Engineering and Technology
+Diploma 1:10
+Under Graduate 1:10
+Post Graduate 1:4
+Planning Under Graduate 1:6Post Graduate 1:4
+Applied Arts and Crafts
+Diploma 1:6
+Under Graduate 1:6
+Post Graduate 1:4
+Design Under Graduate 1:6Post Graduate 1:4
+Hotel Management and Catering 
+Technology
+Diploma 1:6
+Under Graduate 1:6
+Computer Application Under Graduate 1:10Post Graduate 1:4
+Management Under Graduate 1:10Post Graduate 1:6
+ 
+ 
+Note: 
+ 1. Institution shall possess adequate number of Systems Software and Application software including  
+  plagiarism checking software with a valid license.
+ 2. All PC’s/ Laptops shall be connected through LAN/Wi-Fi.
+ 3. The institutions shall possess printers up to a minimum 5% of the total number of PCs/Laptops.
+ 4. At least one printer to be A1 Size Color Printer/ Plotter s required for the programme- Planning.
+ 5. The Institution shall possess an Internet bandwidth based on the approved intake. For Intake up to  
+  300: 100Mbps, 301-600: 300Mbps, 601-900: 500Mbps, > 900: 1Gbpa. 
+ 6. Utilization of Open Source Software shall be encouraged.
+ 7. Secured Wi-Fi facility with reliable hardware is highly recommended.
+ 8. Library, Administrative Offices and Faculty members shall be provided with exclusive computing  
+  facilities along with LAN and Internet. This shall be considered as over and above the requirement  
+  meant for PCs to students’ ratio.
+ 9. PC shall also include Laptop in the inventory of the Institution.
+ 10. Every Department shall have separate Computer Laboratory with at least 20 Computers.
+
+Approval Process Handbook 2024-2027
+93
+ 11. Effective utilization of ICT/ Research/ Other academic related facilities extended by agencies/ 
+  organizations through MoU with AICTE is highly recommended (https://www.aicte-india.org/ 
+  education/collaborations). 
+ 
+4.2				Laboratory	Equipment	and	Experiments
+ The Laboratories shall have appropriate and adequate number of equipment as prescribed by the 
+ affiliating University/ Board’s Curriculum for the effective conduct of laboratories. 
+ 
+4.3					Books	and	Library	Facilities 
+ 
+Programme
+Total 
+Number of 
+Divisions
+Titles Volumes Reading Room 
+Seating Capacity 
+% of Total 
+Students
+Number
+Diploma
+Engineering and 
+Technology/ Applied 
+Arts and Crafts/ 
+Hotel Management 
+and Catering 
+Technology 
+B
+50# 
+(First Year) 5xNo.of Titles x B
+15 % (Max. 150)50#  
+50* Per Course from 
+2nd Year Onwards
+5xNo.of Titles x B
+Under Graduate
+Engineering and 
+Technology B
+100#(First Year) 5xNo.of Titles x B
+15 % (Max. 150)
+50* per Course from 
+2nd Year to 4th Year 5xNo.of Titles x B
+Management & 
+Computer 
+Application
+B 50# Per Year 5xNo.of Titles x B
+Planning B
+100# 
+(First Year) 5xNo.of Titles x B
+50* Per Year from 
+2nd Year to 4th Year 5xNo.of Titles x B
+Applied Arts and 
+Crafts/ Design B
+100# 
+(First Year) 5xNo.of Titles x B
+50*Per year from 
+2nd Year to 4th Year 5xNo.of Titles x B
+Hotel Management 
+and Catering 
+Technology 
+B
+100# 
+(First Year) 5xNo.of Titles x B
+50* Per Year from 
+2nd Year to 4th Year 5xNo.of Titles x B
+Post Graduate
+Engineering and 
+Technology/
+Planning/ Applied 
+Arts and Crafts/ 
+Design/Hotel 
+Management and 
+Catering 
+Technology
+B 50 Per Course 4xNo.of Titles x B
+25 % (Max. 100)
+ MCA/ PGDM/ MBA B 100# 5xNo.of Titles x B50* 5xNo.of Titles x B
+ 
+ 
+B - Number of Divisions at First year 
+# Book Titles and Volumes required at the time of starting a new Technical Institution equally distributed per subject. 
+* Annual Increment equally distributed per subject.
+
+  
+Approval Process Handbook 2024-2027
+94
+NOTE:
+1 Total number of Titles and Volumes shall be increased in continuation till 10 years from the starting of the 
+course(s), which shall be the minimum stock of Books. After 10 years as per the Affiliating Body Curriculum 
+and Syllabus, the Older Edition Books shall be  replaced with latest edition by 5% of the total minimum Books 
+required for that Programme.
+2 Books shall also include subjects of Sciences, Humanities, Management and Social Sciences as per the  
+requirements of the Curriculum and Syllabus.
+3 The reading room shall possess Multimedia PC’s for Digital Library/Internet surfing to cater up to 10% of total 
+students ( Maximum limited to 30 PC’s)
+4 It is desired that the Library shall be kept functional for the students and faculty members for a  
+minimum of 16 hrs. per day on working days and 12 hrs. on non-working days
+5 Reprographic center  including scanning facility  in the Library is essential.
+6 Facilities to access the Online Courses is essential.
+7 Library automation software including Bar coding is desirable.
+8 Up to 66% of the total number of Titles and Volumes may be in the form of e-books with intranet access 
+mandatory in case of Post Graduate Level Programme(s) and shall be desirable in case of UG/ Diploma 
+Programme(s). Member in NDL/ Indian National Digital Library in Engineering Sciences and Technology 
+(INDEST) or any other National Consortium is permissible for e-books.
+9 The Institution shall be a member of National Digital Library(NDL) and shall encourage faculty  
+members and students to secure membership.  Aggregators may also be used.
+4.4						Labratory	Equipment	and	Experiments
+Programme Total Number of Courses (N) Journals indexed by Scopus/ Web of Science/ Medline
+Diploma
+Engineering and 
+Technology Planning/ Applied 
+Arts and Crafts/ Design/ Hotel 
+Management and 
+Catering Technology
+Adequate Number of Journals /Periodicals / Magazines Providing 
+Exposure to New Products/ Ideas/Concepts etc.
+Under Graduate & Post Graduate
+Engineering and 
+Technology/Planning/Applied 
+Arts and Crafts/ Design Hotel 
+Management and 
+Catering 
+Technology/ 
+Management/Computer 
+Applications
+6x N 
+( For each Level)
+NOTE: 1. All the Journals in the Library are to be “subscribed” and are to be indexed 
+ 2.  Subscription may NOT necessarily mean Individual Procurements, but can be part of University /  
+   State / Group of Institutes in a “Consortium”.
+ 3. The e-Shodh Sindhu is providing support in negotiating the prices of e-resources 
+  to  AICTE approved Technical Institutions. The same shall be explored by the Institutions. 
+ 
+ 4. Journals shall also include subjects of Science, Humanities, Management and Social Science
+
+Approval Process Handbook 2024-2027
+95
