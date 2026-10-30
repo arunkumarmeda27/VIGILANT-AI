@@ -22,6 +22,8 @@ from app.models.models import (
     ComplianceAssessment,
     ComplianceRule,
     Document,
+    DocumentSchemaVersion,
+    DocumentType,
     Finding,
     FindingReview,
     Institution,
@@ -57,6 +59,18 @@ def make_image_pdf() -> bytes:
 def make_blank_pdf() -> bytes:
     pdf = fitz.open()
     pdf.new_page()
+    content = pdf.tobytes()
+    pdf.close()
+    return content
+
+
+def make_blank_scan_pdf() -> bytes:
+    image = Image.new("RGB", (900, 300), "white")
+    image_buffer = BytesIO()
+    image.save(image_buffer, format="PNG")
+    pdf = fitz.open()
+    page = pdf.new_page()
+    page.insert_image(page.rect, stream=image_buffer.getvalue())
     content = pdf.tobytes()
     pdf.close()
     return content
@@ -135,10 +149,11 @@ def login(email):
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
-def upload(application_id, headers, filename="supporting.pdf", content=PDF_CONTENT, content_type="application/pdf"):
+def upload(application_id, headers, filename="supporting.pdf", content=PDF_CONTENT, content_type="application/pdf", doc_type=None):
     return client.post(
         f"/api/applications/{application_id}/documents",
         headers=headers,
+        data={"doc_type": doc_type} if doc_type else None,
         files={"file": (filename, content, content_type)},
     )
 
@@ -236,6 +251,8 @@ def test_integrity_preview_detects_identical_files_only_within_application(test_
 
     assert response.status_code == 200
     result = response.json()
+    assert result["file_hash_check"]["status"] == "match"
+    assert result["file_hash_check"]["stored_sha256"] == result["file_hash_check"]["current_sha256"]
     assert result["duplicate_file_check"]["status"] == "duplicate"
     assert result["duplicate_file_check"]["matches"] == [{
         "document_id": first.json()["id"],
@@ -244,6 +261,32 @@ def test_integrity_preview_detects_identical_files_only_within_application(test_
     assert result["authenticity_status"] == "not_assessed"
     assert result["issuer_verification"] == "not_performed"
     assert "does not establish" in result["limitations"][1]
+
+
+def test_integrity_preview_detects_stored_file_hash_mismatch_without_claiming_fraud(test_database):
+    application_id, document_id, headers = create_processed_document(
+        test_database,
+        "integrity-mismatch@example.com",
+        "INTEGRITY-MISMATCH",
+    )
+    with test_database() as db:
+        document = db.query(Document).filter_by(id=document_id).one()
+        stored_path = settings.DOCUMENT_STORAGE_DIR / document.storage_key
+        original_sha256 = document.sha256
+    stored_path.write_bytes(b"changed stored bytes")
+
+    response = inspect_integrity(application_id, document_id, headers)
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["file_hash_check"]["status"] == "mismatch"
+    assert result["file_hash_check"]["stored_sha256"] == original_sha256
+    assert result["file_hash_check"]["current_sha256"] == hashlib.sha256(
+        b"changed stored bytes"
+    ).hexdigest()
+    assert "not document fraud or authenticity" in result["file_hash_check"]["explanation"]
+    assert result["authenticity_status"] == "not_assessed"
+    assert result["issuer_verification"] == "not_performed"
 
 
 def test_duplicate_upload_persists_advisory_finding_and_audit_without_cross_application_match(test_database):
@@ -421,6 +464,7 @@ def test_integrity_check_persists_audit_event(test_database):
     with test_database() as db:
         event = db.query(AuditEvent).filter_by(action="document.integrity_checked").one()
         assert event.entity_id == str(uploaded.json()["id"])
+        assert json.loads(event.audit_metadata)["file_hash_check"] == "match"
 
 
 def test_integrity_preview_denies_unauthorized_application_and_document(test_database):
@@ -672,16 +716,149 @@ def test_process_text_pdf_extracts_fields_with_page_evidence(test_database):
     assert persisted.json()["fields"] == result["fields"]
 
 
+def test_process_tabular_synthetic_fire_certificate_and_refresh_legacy_cache(test_database, monkeypatch):
+    institution_id = create_institution(test_database, "Synthetic processing institution")
+    user_id = create_user(
+        test_database,
+        "synthetic-processor@example.com",
+        UserRole.INSTITUTION_USER,
+        institution_id,
+    )
+    application_id = create_application(test_database, "SYNTH-FIRE-EXTRACTION", institution_id)
+    pdf = make_text_pdf(
+        "SYNTHETIC FIRE SAFETY TEST DOCUMENT\n"
+        "DEMO / TEST DATA ONLY - NOT AN OFFICIAL CERTIFICATE\n"
+        "Synthetic Document Fields\n"
+        "Field\n"
+        "Synthetic test value\n"
+        "Institution Name\n"
+        "VIGILANT Synthetic Test College\n"
+        "Certificate Number\n"
+        "SYNTH-FIRE-TEST-2026-0042\n"
+        "Issuing Authority\n"
+        "Synthetic Test Authority (not a real issuer)\n"
+        "Issue Date\n"
+        "2026-01-15\n"
+        "Expiry Date\n"
+        "2027-01-14\n"
+        "All details are fictional."
+    )
+    storage_key = "synthetic_fire_safety_test_document.pdf"
+    settings.DOCUMENT_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    storage_path = settings.DOCUMENT_STORAGE_DIR / storage_key
+    storage_path.write_bytes(pdf)
+
+    # Reproduce the existing completed row with missing fields created by the old extractor.
+    with test_database() as db:
+        document = Document(
+            application_id=application_id,
+            doc_type="fire_safety_certificate",
+            original_filename=storage_key,
+            storage_key=storage_key,
+            processing_status="completed",
+            processing_result={
+                "processing_status": "completed",
+                "extraction_method": "text",
+                "pages_processed": 1,
+                "fields": {
+                    name: {
+                        "value": None,
+                        "page": None,
+                        "evidence": None,
+                        "confidence": None,
+                        "status": "missing",
+                    }
+                    for name in (
+                        "institution_name",
+                        "certificate_number",
+                        "issue_date",
+                        "expiry_date",
+                    )
+                },
+                "warnings": [],
+            },
+        )
+        db.add(document)
+        db.commit()
+        db.refresh(document)
+        document_id = document.id
+        reviewer = db.query(User).filter_by(id=user_id).one()
+
+        response = application_routes.process_document(
+            application_id, document_id, db, reviewer
+        )
+
+    result = response.model_dump()
+    expected = {
+        "institution_name": "VIGILANT Synthetic Test College",
+        "certificate_number": "SYNTH-FIRE-TEST-2026-0042",
+        "issue_date": "2026-01-15",
+        "expiry_date": "2027-01-14",
+    }
+    for field_name, value in expected.items():
+        field = result["fields"][field_name]
+        assert field["value"] == value
+        assert field["page"] == 1
+        assert field["status"] == "extracted"
+        assert field["verification_status"] == "unverified"
+        assert value in field["evidence"]
+        assert field_name.replace("_", " ").split()[0].capitalize() in field["evidence"]
+
+    with test_database() as db:
+        document = db.query(Document).filter_by(id=document_id).one()
+        assert (
+            document.processing_result["field_extraction_version"]
+            == document_processing.FIELD_EXTRACTION_VERSION
+        )
+        assert document.processing_result["fields"]["expiry_date"]["value"] == "2027-01-14"
+
+    monkeypatch.setattr(
+        application_routes,
+        "process_pdf",
+        lambda *_args, **_kwargs: pytest.fail("current results should remain cached"),
+    )
+    with test_database() as db:
+        cached = application_routes.process_document(
+            application_id,
+            document_id,
+            db,
+            db.query(User).filter_by(id=user_id).one(),
+        )
+    assert cached.model_dump() == result
+
+
 def test_document_classification_uses_content_and_keeps_uncertain_type_unclassified(test_database):
     institution_id = create_institution(test_database, "Classification institution")
     create_user(test_database, "classifier@example.com", UserRole.INSTITUTION_USER, institution_id)
     application_id = create_application(test_database, "CLASSIFY-1", institution_id)
     headers = login("classifier@example.com")
+    with test_database() as db:
+        registered_type = DocumentType(
+            id="fire_safety_certificate",
+            display_name="Fire Safety Certificate",
+            category="synthetic_test",
+            description="Synthetic test type.",
+            aliases=["fire safety certificate", "fire department"],
+            supported_file_formats=["pdf"],
+            supported_languages=["en"],
+            application_categories=[],
+            regulatory_rule_references=[],
+            verification_config={"method": "not_configured"},
+            status="active",
+        )
+        registered_type.schema_versions.append(DocumentSchemaVersion(
+            schema_version="1.0.0",
+            definition={"fields": [{"id": "institution_name", "label": "Institution name", "data_type": "string"}]},
+            status="active",
+        ))
+        db.add(registered_type)
+        db.commit()
 
     certificate = upload(
         application_id,
         headers,
         content=make_text_pdf("Fire Safety Certificate\nIssued by Fire Department"),
+        doc_type="fire_safety_certificate",
     )
     assert certificate.status_code == 201
     classified = process(application_id, certificate.json()["id"], headers)
@@ -690,6 +867,10 @@ def test_document_classification_uses_content_and_keeps_uncertain_type_unclassif
     assert result["status"] == "classified"
     assert result["candidate_document_type"] == "fire_safety_certificate"
     assert result["match_strength"] == "strong"
+    assert result["registry_status"] == "active"
+    assert result["classifier"] == "registry_alias_matcher"
+    assert result["score_kind"] == "heuristic_match_ratio"
+    assert result["human_review_required"] is True
     assert {item["signal"] for item in result["evidence"]} >= {
         "fire safety certificate",
         "fire department",
@@ -986,10 +1167,12 @@ def test_scanned_pdf_uses_ocr_and_returns_confidence(test_database, monkeypatch)
     application_id = create_application(test_database, "SCAN-1", institution_id)
 
     monkeypatch.setattr(document_processing.shutil, "which", lambda _: "tesseract")
+    monkeypatch.setattr(document_processing.pytesseract, "get_tesseract_version", lambda: "5.0-test")
+    monkeypatch.setattr(document_processing.pytesseract, "get_languages", lambda **_kwargs: ["eng"])
     monkeypatch.setattr(
         document_processing,
-        "_ocr_page",
-        lambda *_args: ("Institution Name: Image Institute", 0.93),
+        "_ocr_page_with_regions",
+        lambda *_args: ("Institution Name: Image Institute", 0.93, ()),
     )
     uploaded = upload(application_id, login("scanner@example.com"), content=make_image_pdf())
     response = process(application_id, uploaded.json()["id"], login("scanner@example.com"))
@@ -1028,6 +1211,7 @@ def test_image_only_pdf_reports_ocr_unavailable_without_inventing_fields(test_da
     institution_id = create_institution(test_database, "No OCR institution")
     create_user(test_database, "no-ocr@example.com", UserRole.INSTITUTION_USER, institution_id)
     application_id = create_application(test_database, "NO-OCR-1", institution_id)
+    monkeypatch.setattr(settings, "TESSERACT_CMD", None)
     monkeypatch.setattr(document_processing.shutil, "which", lambda _: None)
     uploaded = upload(application_id, login("no-ocr@example.com"), content=make_image_pdf())
 
@@ -1041,18 +1225,238 @@ def test_image_only_pdf_reports_ocr_unavailable_without_inventing_fields(test_da
     assert any("Tesseract" in warning for warning in result["warnings"])
 
 
-def test_empty_pdf_reports_missing_fields(test_database):
+def test_empty_pdf_reports_missing_fields(test_database, monkeypatch):
     institution_id = create_institution(test_database, "Empty text institution")
     create_user(test_database, "empty-text@example.com", UserRole.INSTITUTION_USER, institution_id)
     application_id = create_application(test_database, "EMPTY-TEXT-1", institution_id)
+    monkeypatch.setattr(settings, "TESSERACT_CMD", None)
+    monkeypatch.setattr(document_processing.shutil, "which", lambda _: None)
     uploaded = upload(application_id, login("empty-text@example.com"), content=make_blank_pdf())
 
     response = process(application_id, uploaded.json()["id"], login("empty-text@example.com"))
 
     assert response.status_code == 200
     result = response.json()
-    assert result["processing_status"] == "ocr_unavailable"
+    assert result["processing_status"] == "empty"
+    assert result["extraction_method"] == "none"
     assert all(field["value"] is None for field in result["fields"].values())
+    assert result["ocr"]["available"] is False
+    assert result["blank_pages"] == [1]
+    assert result["unreadable_pages"] == []
+
+
+def test_uniformly_blank_scanned_page_skips_ocr_and_is_persisted_as_empty(test_database, monkeypatch):
+    institution_id = create_institution(test_database, "Blank scan institution")
+    create_user(test_database, "blank-scan@example.com", UserRole.INSTITUTION_USER, institution_id)
+    application_id = create_application(test_database, "BLANK-SCAN-1", institution_id)
+    monkeypatch.setattr(settings, "TESSERACT_CMD", None)
+    monkeypatch.setattr(document_processing.shutil, "which", lambda _: None)
+    uploaded = upload(
+        application_id,
+        login("blank-scan@example.com"),
+        content=make_blank_scan_pdf(),
+    )
+
+    response = process(
+        application_id,
+        uploaded.json()["id"],
+        login("blank-scan@example.com"),
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["processing_status"] == "empty"
+    assert result["blank_pages"] == [1]
+    assert result["unreadable_pages"] == []
+    assert result["ocr"]["available"] is False
+    with test_database() as db:
+        stored = db.query(Document).filter_by(id=uploaded.json()["id"]).one()
+        assert stored.processing_status == "empty"
+        assert stored.processing_result["blank_pages"] == [1]
+
+
+def test_configured_tesseract_path_is_used_for_ocr_invocation(tmp_path, monkeypatch):
+    path = tmp_path / "configured-tesseract.pdf"
+    path.write_bytes(make_image_pdf())
+    configured_executable = r"C:\OCR\Tesseract\tesseract.exe"
+    calls = []
+    monkeypatch.setattr(document_processing.shutil, "which", lambda _: None)
+    monkeypatch.setattr(
+        document_processing.pytesseract.pytesseract,
+        "tesseract_cmd",
+        "original-command",
+    )
+    monkeypatch.setattr(
+        document_processing.pytesseract,
+        "get_tesseract_version",
+        lambda: "5.5-test",
+    )
+    monkeypatch.setattr(
+        document_processing.pytesseract,
+        "get_languages",
+        lambda **_kwargs: ["eng"],
+    )
+
+    def recognize(*_args, **_kwargs):
+        calls.append(document_processing.pytesseract.pytesseract.tesseract_cmd)
+        return "Institution Name: Configured Engine Institute", 0.9, ()
+
+    monkeypatch.setattr(document_processing, "_ocr_page_with_regions", recognize)
+
+    result = document_processing.process_pdf(
+        path,
+        max_file_size=1_000_000,
+        max_pages=5,
+        max_seconds=15,
+        max_text_chars=20_000,
+        ocr_page_timeout=5,
+        tesseract_cmd=configured_executable,
+    )
+
+    assert calls == [configured_executable]
+    assert result["processing_status"] == "completed"
+    assert result["ocr"]["engine_version"] == "5.5-test"
+    assert result["fields"]["institution_name"]["value"] == "Configured Engine Institute"
+
+
+def test_ocr_runtime_failure_is_partial_and_marks_page_unreadable(tmp_path, monkeypatch):
+    path = tmp_path / "ocr-runtime-failure.pdf"
+    path.write_bytes(make_image_pdf())
+    monkeypatch.setattr(document_processing.shutil, "which", lambda _: "tesseract")
+    monkeypatch.setattr(
+        document_processing.pytesseract,
+        "get_tesseract_version",
+        lambda: "5.0-test",
+    )
+    monkeypatch.setattr(
+        document_processing.pytesseract,
+        "get_languages",
+        lambda **_kwargs: ["eng"],
+    )
+
+    def fail_ocr(*_args, **_kwargs):
+        raise RuntimeError("OCR engine exited unexpectedly")
+
+    monkeypatch.setattr(document_processing, "_ocr_page_with_regions", fail_ocr)
+    result = document_processing.process_pdf(
+        path,
+        max_file_size=1_000_000,
+        max_pages=5,
+        max_seconds=15,
+        max_text_chars=20_000,
+        ocr_page_timeout=5,
+    )
+
+    assert result["processing_status"] == "partial"
+    assert result["unreadable_pages"] == [1]
+    assert result["blank_pages"] == []
+    assert result["fields"]["institution_name"]["value"] is None
+    assert result["ocr"]["available"] is True
+    assert any("OCR failed on page 1" in warning for warning in result["warnings"])
+
+
+def test_digital_pdf_preserves_page_text_regions_and_processing_metadata(tmp_path):
+    pdf = fitz.open()
+    pdf.new_page().insert_text(
+        (72, 72),
+        "Institution Name: Multi Page Institute\n"
+        "This synthetic page contains enough embedded text to demonstrate extraction.",
+    )
+    pdf.new_page().insert_text(
+        (72, 72),
+        "Certificate No: MP-2026-01\n"
+        "This second synthetic page contains a separate certificate reference.",
+    )
+    path = tmp_path / "multi-page.pdf"
+    pdf.save(path)
+    pdf.close()
+
+    result = document_processing.process_pdf(
+        path,
+        max_file_size=1_000_000,
+        max_pages=10,
+        max_seconds=30,
+        max_text_chars=100_000,
+        ocr_page_timeout=5,
+    )
+
+    assert result["processing_status"] == "completed"
+    assert result["extraction_method"] == "text"
+    assert result["pages_processed"] == 2
+    assert [page["page"] for page in result["pages"]] == [1, 2]
+    assert result["pages"][0]["method"] == "text"
+    assert result["fields"]["certificate_number"]["page"] == 2
+    assert result["fields"]["certificate_number"]["raw_value"] == "MP-2026-01"
+    assert result["fields"]["certificate_number"]["coordinates"] is not None
+    assert result["processing_duration_ms"] >= 0
+    assert result["ocr"]["available"] is False
+
+
+def test_processing_extracts_schema_defined_fields_and_registry_classifier(tmp_path):
+    from app.services.document_processing import PageText
+    from app.services.document_classification import classify_document_text
+
+    pdf = fitz.open()
+    pdf.new_page().insert_text(
+        (72, 72),
+        "Synthetic operating permit\n"
+        "Operating permit code: PR-2026-44\n"
+        "This document contains enough embedded text to avoid invoking OCR.",
+    )
+    path = tmp_path / "schema-fields.pdf"
+    pdf.save(path)
+    pdf.close()
+    schema = {
+        "fields": [{
+            "id": "permit_code",
+            "label": "Operating permit code",
+            "data_type": "string",
+            "required": True,
+        }]
+    }
+    registered_types = [{
+        "id": "operating_permit",
+        "display_name": "Operating Permit",
+        "aliases": ["synthetic operating permit", "operating permit"],
+        "status": "active",
+        "active_schema_version_id": 12,
+    }]
+    result = document_processing.process_pdf(
+        path,
+        max_file_size=1_000_000,
+        max_pages=10,
+        max_seconds=30,
+        max_text_chars=100_000,
+        ocr_page_timeout=5,
+        registered_document_types=registered_types,
+        schema_definition=schema,
+    )
+    extracted = result["fields"]["permit_code"]
+    assert extracted["value"] == "PR-2026-44"
+    assert extracted["raw_value"] == "PR-2026-44"
+    assert extracted["page"] == 1
+    assert extracted["evidence"] == "Operating permit code: PR-2026-44"
+    assert extracted["method"] == "text"
+    assert extracted["extractor_version"] == "schema_label_parser_2"
+    assert extracted["coordinates"] is not None
+
+    prediction = result["classification"]
+    assert prediction["candidate_document_type"] == "operating_permit"
+    assert prediction["registry_status"] == "active"
+    assert prediction["schema_version_id"] == 12
+    assert prediction["classifier"] == "registry_alias_matcher"
+    assert prediction["score_kind"] == "heuristic_match_ratio"
+    assert prediction["human_review_required"] is True
+    assert prediction["heuristic_score"] != 1.0 or prediction["match_strength"] == "strong"
+
+    inactive = classify_document_text(
+        [PageText(1, "Synthetic operating permit", "text", None)],
+        [{**registered_types[0], "status": "draft", "active_schema_version_id": None}],
+    )
+    assert inactive["candidate_document_type"] == "operating_permit"
+    assert inactive["status"] == "needs_review"
+    assert inactive["abstention_reason"] == "inactive_registry_type"
+    assert inactive["schema_version_id"] is None
 
 
 def test_malformed_pdf_processing_returns_error_and_marks_failed(test_database):
@@ -1164,13 +1568,20 @@ def test_ocr_page_rendering_size_is_limited(test_database, monkeypatch):
     create_user(test_database, "render-limit@example.com", UserRole.INSTITUTION_USER, institution_id)
     application_id = create_application(test_database, "RENDER-LIMIT-1", institution_id)
     pdf = fitz.open()
-    pdf.new_page(width=20_000, height=20_000)
+    page = pdf.new_page(width=20_000, height=20_000)
+    image = Image.new("RGB", (20, 20), "white")
+    ImageDraw.Draw(image).line((2, 2, 18, 18), fill="black", width=2)
+    image_buffer = BytesIO()
+    image.save(image_buffer, format="PNG")
+    page.insert_image(page.rect, stream=image_buffer.getvalue())
     oversized_page_pdf = pdf.tobytes()
     pdf.close()
     monkeypatch.setattr(document_processing.shutil, "which", lambda _: "tesseract")
+    monkeypatch.setattr(document_processing.pytesseract, "get_tesseract_version", lambda: "5.0-test")
+    monkeypatch.setattr(document_processing.pytesseract, "get_languages", lambda **_kwargs: ["eng"])
     monkeypatch.setattr(
         document_processing,
-        "_ocr_page",
+        "_ocr_page_with_regions",
         lambda *_args, **_kwargs: pytest.fail("oversized page should not be rendered"),
     )
     uploaded = upload(

@@ -19,16 +19,18 @@ SIH26261 calls for support reviewing institutional application evidence and regu
 | Real-data Application and Document Verification pages | Use authenticated backend endpoints |
 | Compliance assessments and review queue | Authenticated, role-scoped persisted assessment API and frontend display; no assessment is created by these read-only pages |
 | Persisted findings | Authorized application findings API and application detail display |
-| Validation workflow | Application detail can run registry validation and cross-document comparison, then show persisted assessments and run-by-run comparison history |
+| Validation workflow | Application detail processes pending documents through the existing processing service, reuses current completed extraction, runs registry checks and cross-document comparison, then shows persisted validation and comparison history |
 | Validation reports | Numeric application IDs show persisted application, document, and assessment records; illustrative nonnumeric routes remain explicitly demo-only |
 | Audit history | Authenticated, role-scoped, paginated read API and UI; metadata is allowlisted to avoid exposing secrets or document contents |
-| Integrity assistance | Same-application SHA-256 duplicate check and limited PDF structure/metadata heuristics; results are not authenticity findings |
+| Integrity assistance | Upload-time/current-file SHA-256 comparison, same-application duplicate check, and limited PDF structure/metadata heuristics; results are not authenticity findings |
 | Authenticity and issuer verification | Not implemented; issuer checks are not performed and a file hash is not proof of authenticity |
 | Production readiness | Not established; review security, deployment, retention, monitoring, and regulatory currentness before any production use |
 
 Some unrelated illustrative pages and nonnumeric demo application routes remain synthetic and are labeled as demo data. The live review queue, compliance, reports, audit history, application dashboard, and document verification surfaces use authenticated backend data; none should be interpreted as an automatic compliance or authenticity decision.
 
 See [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md) for a feature-by-feature status report and the checks run.
+
+The current 21-issue evidence summary is in [docs/MASTER_IMPLEMENTATION_REPORT.md](./docs/MASTER_IMPLEMENTATION_REPORT.md), with the [issue-level traceability matrix](./docs/REQUIREMENT_TRACEABILITY_MATRIX.md) and a [synthetic end-to-end demo sequence](./docs/END_TO_END_DEMO_GUIDE.md). Detailed official SIH26261 criteria remain unverified until the complete official problem statement is available.
 
 ## Architecture
 
@@ -64,7 +66,7 @@ Set-Location .\backend
 
 `alembic current` reports the configured database revision; `alembic heads` reports the repository migration head. Only after confirming the configured target is intended and reviewing pending migrations, an administrator can apply them with `.\venv\Scripts\python.exe -m alembic upgrade head` from `backend`. Never run migrations against production or an unverified database. Migrations do not seed application data. Application creation should use the authenticated API. Tests use isolated in-memory or temporary SQLite databases, not the configured PostgreSQL database.
 
-The repository migration head is `a71c9f4e2b36`. The consistency-run migration backfills existing results into one legacy run per application; the finding-review and assessment-review migrations add separate append-only decision histories. The historical backfill cannot reconstruct validation attempts that older code had already overwritten. The live database revision is environment-dependent and must be verified with `alembic current`; repository state alone does not prove a database has been upgraded.
+The repository migration head is `d29f6a4c120e`. The migration chain includes consistency-run history, append-only finding and assessment reviews, persisted validation runs, and the versioned document registry. The consistency-run migration backfills existing results into one legacy run per application; that historical backfill cannot reconstruct validation attempts older code had already overwritten. The live database revision is environment-dependent and must be verified with `alembic current`; repository state alone does not prove a database has been upgraded.
 
 ## Start locally
 
@@ -187,6 +189,6 @@ No browser-based end-to-end test is currently configured. An API or unit test pa
 - The existing application type and status fields are free-form strings; this prototype does not define a complete application workflow or formal status transition policy.
 - Administrator-created records require an institution selected through the institution picker on the create-application page.
 - Audit history is paginated and scoped; it is not a tamper-proof or complete compliance ledger. It exposes selected creation, update, upload, and processing events, not full document contents.
-- Integrity checks are limited heuristics and same-application duplicate hashes. The checklist is synthetic and category mappings are not official AICTE requirements. No issuer authentication, fraud detection, or calibrated anomaly analysis is implemented.
+- Integrity checks compare current stored bytes with the upload-time SHA-256 and look for same-application duplicate hashes; these are integrity indicators, not proof of authenticity. The checklist is synthetic and category mappings are not official AICTE requirements. No issuer authentication, fraud detection, or calibrated anomaly analysis is implemented.
 - Protect `.env`, database backups, document storage, logs, and JWT secrets. Configure HTTPS, least privilege, backups, monitoring, rate limiting, retention controls, and a reviewed production secret/database setup before deployment.
 - Human review remains necessary. Extracted text, OCR confidence, successful upload, and field matching are not proof of authenticity or institutional compliance.

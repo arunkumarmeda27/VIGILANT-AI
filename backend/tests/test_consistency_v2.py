@@ -178,13 +178,15 @@ def test_validate_consistency_preserves_history():
     res1 = next(result for result in results1 if result.field == "institution_name")
     res2 = next(result for result in results2 if result.field == "institution_name")
     assert res1.category == "MATCH"
-    assert res2.category == "CONFIRMED_MISMATCH"
+    assert res2.category == "POSSIBLE_MISMATCH"
     assert res1.application_id == app_id
     assert res1.doc1_id != res1.doc2_id
     assert res1.val1 == "Institute A"
     assert res1.val2 == "Institute A"
     assert res1.explanation
     assert res2.human_review_recommended is True
+    assert "human reviewer must verify" in res2.explanation
+    assert "does not establish which value is correct" in res2.explanation
     assert session.query(ComplianceAssessment).filter_by(id=assessment_id).count() == 1
     assert session.query(AuditEvent).filter_by(
         action="application.validate_consistency",

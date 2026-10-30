@@ -233,3 +233,60 @@ def test_assessment_reviews_migration_preserves_existing_assessments(tmp_path):
         review_table = Table("compliance_assessment_reviews", MetaData(), autoload_with=connection)
         assert connection.execute(select(review_table)).all() == []
     engine.dispose()
+
+
+def test_review_lifecycle_migration_preserves_assessments_and_defaults_review_state(tmp_path):
+    migration_path = (
+        Path(__file__).parents[1]
+        / "alembic"
+        / "versions"
+        / "c2a9e715b304_add_assessment_review_lifecycle.py"
+    )
+    spec = importlib.util.spec_from_file_location("assessment_review_lifecycle_migration", migration_path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    engine = create_engine(f"sqlite:///{tmp_path / 'assessment-review-lifecycle.db'}")
+    metadata = MetaData()
+    users = Table("users", metadata, Column("id", Integer, primary_key=True))
+    applications = Table("applications", metadata, Column("id", Integer, primary_key=True))
+    rules = Table("compliance_rules", metadata, Column("id", Integer, primary_key=True))
+    assessments = Table(
+        "compliance_assessments",
+        metadata,
+        Column("id", Integer, primary_key=True),
+        Column("application_id", Integer, ForeignKey("applications.id")),
+        Column("rule_id", Integer, ForeignKey("compliance_rules.id")),
+        Column("status", String(50)),
+        Column("explanation", Text),
+    )
+    metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(insert(users), {"id": 1})
+        connection.execute(insert(applications), {"id": 2})
+        connection.execute(insert(rules), {"id": 3})
+        connection.execute(insert(assessments), {
+            "id": 4,
+            "application_id": 2,
+            "rule_id": 3,
+            "status": "Not evaluated",
+            "explanation": "No authoritative rule was evaluated.",
+        })
+    with engine.begin() as connection:
+        context = MigrationContext.configure(connection)
+        with Operations.context(context):
+            migration.upgrade()
+
+    inspector = inspect(engine)
+    columns = {column["name"]: column for column in inspector.get_columns("compliance_assessments")}
+    assert columns["review_status"]["nullable"] is False
+    assert "compliance_assessment_status_history" in inspector.get_table_names()
+    with engine.connect() as connection:
+        assert connection.execute(select(
+            assessments.c.id,
+            assessments.c.status,
+            assessments.c.explanation,
+            assessments.c.review_status,
+        )).all() == [
+            (4, "Not evaluated", "No authoritative rule was evaluated.", "PENDING_REVIEW")
+        ]
+    engine.dispose()

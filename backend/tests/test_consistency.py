@@ -130,7 +130,7 @@ def test_validate_consistency_success_match():
     assert result.category == "MATCH"
     session.close()
 
-def test_validate_consistency_confirmed_mismatch():
+def test_validate_consistency_reports_unverified_extraction_discrepancy():
     inst_id = create_institution()
     user_email = create_test_user(institution_id=inst_id)
     token = get_token(user_email)
@@ -138,10 +138,20 @@ def test_validate_consistency_confirmed_mismatch():
 
     # Create two documents with conflicting institution names
     create_processed_document(app_id, "doc1", {
-        "institution_name": {"value": "Institute A", "status": "extracted"}
+        "institution_name": {
+            "value": "Institute A",
+            "status": "extracted",
+            "page": 2,
+            "evidence": "Institution: Institute A",
+        }
     })
     create_processed_document(app_id, "doc2", {
-        "institution_name": {"value": "Institute B", "status": "extracted"}
+        "institution_name": {
+            "value": "Institute B",
+            "status": "extracted",
+            "page": 3,
+            "evidence": "Institution: Institute B",
+        }
     })
 
     response = client.post(
@@ -149,16 +159,32 @@ def test_validate_consistency_confirmed_mismatch():
         headers={"Authorization": f"Bearer {token}"}
     )
     assert response.status_code == 200
+    run_id = response.json()["run_id"]
 
-    session = TestingSessionLocal()
-    result = session.query(DocumentConsistencyResult).filter(
-        DocumentConsistencyResult.application_id == app_id,
-        DocumentConsistencyResult.field == "institution_name"
-    ).first()
-    assert result is not None
-    assert result.category == "CONFIRMED_MISMATCH"
-    assert result.human_review_recommended is True
-    session.close()
+    history = client.get(
+        f"/api/applications/{app_id}/consistency-runs",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert history.status_code == 200
+    run = next(item for item in history.json()["items"] if item["id"] == run_id)
+    result = next(item for item in run["results"] if item["field"] == "institution_name")
+    assert result["category"] == "POSSIBLE_MISMATCH"
+    assert result["val1"] == "Institute A"
+    assert result["val2"] == "Institute B"
+    assert result["human_review_recommended"] is True
+    assert "human reviewer must verify" in result["explanation"]
+    assert "does not establish which value is correct" in result["explanation"]
+    assert "CONFIRMED_MISMATCH" not in result["category"]
+
+    with TestingSessionLocal() as session:
+        persisted = session.query(DocumentConsistencyResult).filter_by(
+            run_id=run_id,
+            field="institution_name",
+        ).one()
+        assert persisted.category == result["category"]
+        assert persisted.val1 == result["val1"]
+        assert persisted.val2 == result["val2"]
+        assert persisted.explanation == result["explanation"]
 
 def test_validate_consistency_insufficient_evidence():
     inst_id = create_institution()

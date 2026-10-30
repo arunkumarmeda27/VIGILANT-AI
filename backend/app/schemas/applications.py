@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from datetime import datetime
 
 class ApplicationBase(BaseModel):
@@ -40,17 +40,42 @@ class DocumentOut(BaseModel):
     processing_status: str
     sha256: Optional[str]
     file_size: Optional[int]
+    predicted_doc_type: Optional[str] = None
+    processed_doc_type: Optional[str] = None
+    schema_version_id: Optional[int] = None
     created_at: datetime
 
     class Config:
         from_attributes = True
 
+
+class ImageEvidenceOut(BaseModel):
+    id: int
+    application_id: int
+    validation_run_id: Optional[int]
+    original_filename: str
+    content_type: str
+    sha256: str
+    file_size: int
+    processing_status: str
+    analysis_result: dict[str, Any]
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ExtractedFieldOut(BaseModel):
     value: Optional[str]
+    raw_value: Optional[str] = None
+    normalized_value: Any = None
     page: Optional[int]
     evidence: Optional[str]
     confidence: Optional[float]
     status: str
+    method: Optional[str] = None
+    extractor_version: Optional[str] = None
+    coordinates: Optional[dict[str, float]] = None
+    verification_status: Literal["unverified"] = "unverified"
 
 
 class ClassificationEvidenceOut(BaseModel):
@@ -63,9 +88,40 @@ class ClassificationEvidenceOut(BaseModel):
 class DocumentClassificationOut(BaseModel):
     status: Literal["classified", "needs_review", "unavailable"]
     candidate_document_type: Optional[str]
+    candidate_alternatives: list[str] = Field(default_factory=list)
+    heuristic_score: Optional[float] = None
+    score_kind: str = "heuristic_match_ratio"
+    registry_status: Optional[str] = None
+    schema_version_id: Optional[int] = None
     match_strength: Literal["strong", "possible", "none"]
+    classifier: Optional[str] = None
+    classifier_version: Optional[str] = None
+    abstention_reason: Optional[str] = None
+    human_review_required: bool = True
     evidence: list[ClassificationEvidenceOut]
     explanation: str
+
+
+class DocumentPageRegionOut(BaseModel):
+    text: str
+    coordinates: dict[str, float]
+    coordinate_space: Literal["pdf_points", "rendered_page_pixels"]
+    confidence: Optional[float] = None
+
+
+class DocumentPageOut(BaseModel):
+    page: int
+    text: str
+    method: Literal["text", "ocr", "mixed"]
+    confidence: Optional[float] = None
+    regions: list[DocumentPageRegionOut] = Field(default_factory=list)
+
+
+class OCRMetadataOut(BaseModel):
+    engine: Optional[str] = None
+    engine_version: Optional[str] = None
+    languages: list[str] = Field(default_factory=list)
+    available: bool
 
 
 class DocumentProcessingOut(BaseModel):
@@ -73,8 +129,14 @@ class DocumentProcessingOut(BaseModel):
     processing_status: str
     extraction_method: str
     pages_processed: int
+    pages: list[DocumentPageOut] = Field(default_factory=list)
+    ocr: OCRMetadataOut = Field(default_factory=lambda: OCRMetadataOut(available=False))
+    processing_duration_ms: float = 0
+    unreadable_pages: list[int] = Field(default_factory=list)
+    blank_pages: list[int] = Field(default_factory=list)
     fields: dict[str, ExtractedFieldOut]
     classification: Optional[DocumentClassificationOut] = None
+    schema_validation: Optional[dict[str, Any]] = None
     warnings: list[str]
     processed_at: Optional[datetime] = None
 
@@ -149,6 +211,66 @@ class DocumentValidationPreviewOut(BaseModel):
     warnings: list[str]
 
 
+class ApplicationValidationDocumentStageOut(BaseModel):
+    document_id: int
+    document_type: str
+    processing_status: str
+    status: Literal["completed", "partial", "pending", "failed", "unsupported", "unavailable"]
+    reason: str
+    schema_validation_status: Optional[str] = None
+    schema_version_id: Optional[int] = None
+
+
+class ApplicationValidationRuleResultOut(BaseModel):
+    rule_id: str
+    document_type: str
+    status: Literal[
+        "Partial",
+        "Not evaluated",
+        "Not-Applicable",
+    ]
+    reason_code: str
+    explanation: str
+    evidence: Optional[str] = None
+
+
+class ApplicationValidationOut(BaseModel):
+    application_id: int
+    run_id: int
+    execution_status: Literal["completed", "partial", "failed"]
+    status: Literal["completed", "partial", "inconclusive"]
+    evaluated_rules_count: int
+    not_evaluated_rules_count: int
+    not_applicable_rules_count: int
+    document_stages: list[ApplicationValidationDocumentStageOut]
+    stages: list[dict[str, Any]]
+    results: list[dict[str, Any]]
+    findings_count: int
+    error_summary: Optional[str] = None
+
+
+class ValidationRunOut(BaseModel):
+    id: int
+    application_id: int
+    user_id: int
+    started_at: datetime
+    completed_at: Optional[datetime]
+    execution_status: Literal["completed", "partial", "failed"]
+    outcome: Literal["completed", "partial", "inconclusive"]
+    stage_outcomes: list[dict[str, Any]]
+    results: list[dict[str, Any]]
+    error_summary: Optional[str]
+    evaluated_rules_count: int
+    not_evaluated_rules_count: int
+    not_applicable_rules_count: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ValidationRunHistoryOut(BaseModel):
+    items: list[ValidationRunOut]
+
+
 class InstitutionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -194,10 +316,18 @@ class AuthenticityCheckOut(BaseModel):
     matches: list[DuplicateFileMatchOut] = Field(default_factory=list)
 
 
+class StoredFileHashCheckOut(BaseModel):
+    status: Literal["match", "mismatch", "unavailable", "not_available"]
+    stored_sha256: Optional[str]
+    current_sha256: Optional[str]
+    explanation: str
+
+
 class DocumentIntegrityPreviewOut(BaseModel):
     application_id: int
     document_id: int
     sha256: Optional[str]
+    file_hash_check: StoredFileHashCheckOut
     duplicate_file_check: AuthenticityCheckOut
     pdf_structure_check: AuthenticityCheckOut
     metadata_check: AuthenticityCheckOut
@@ -216,6 +346,19 @@ class ComplianceAssessmentReviewOut(BaseModel):
     created_at: datetime
 
 
+class ComplianceAssessmentStatusUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    review_status: Literal[
+        "PENDING_REVIEW",
+        "IN_REVIEW",
+        "ADDITIONAL_INFORMATION_REQUIRED",
+        "ESCALATED",
+        "CLOSED",
+    ]
+    reason: Optional[str] = Field(default=None, max_length=2000)
+
+
 class ComplianceAssessmentOut(BaseModel):
     id: int
     application_id: int
@@ -226,6 +369,13 @@ class ComplianceAssessmentOut(BaseModel):
     rule_title: str
     category: str
     status: str
+    review_status: Literal[
+        "PENDING_REVIEW",
+        "IN_REVIEW",
+        "ADDITIONAL_INFORMATION_REQUIRED",
+        "ESCALATED",
+        "CLOSED",
+    ]
     explanation: str
     assessed_at: datetime
     reviewer_name: Optional[str]
@@ -242,6 +392,7 @@ class ComplianceAssessmentDetailOut(ComplianceAssessmentOut):
     rule_description: str
     assigned_reviewer_id: Optional[int]
     document_evidence: list[dict[str, object]]
+    review_status_history: list[dict[str, object]] = Field(default_factory=list)
 class ComplianceAssessmentReviewCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     outcome: Literal["evidence_accepted", "evidence_rejected", "information_requested", "further_investigation"]

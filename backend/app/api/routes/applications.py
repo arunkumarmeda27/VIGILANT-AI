@@ -1,13 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, File, Form, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, File, Form, UploadFile, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from app.db.session import get_db
-from app.models.models import Application, User, Document, ComplianceAssessment, ComplianceRule, AuditEvent, Institution, Finding, FindingReview, DocumentConsistencyResult, ConsistencyRun
+from app.models.models import Application, User, Document, ComplianceAssessment, ComplianceRule, AuditEvent, Institution, Finding, FindingReview, DocumentConsistencyResult, ConsistencyRun, ValidationRun, ImageEvidence
+from app.models.models import DocumentSchemaVersion, DocumentType, DocumentTypeCorrection
 from app.schemas.applications import (
     ApplicationCreate,
     ApplicationUpdate,
     ApplicationOut,
     DocumentOut,
+    ImageEvidenceOut,
     DocumentProcessingOut,
     DocumentValidationPreviewOut,
     DocumentIntegrityPreviewOut,
@@ -16,7 +18,10 @@ from app.schemas.applications import (
     FindingReviewCreate,
     FindingReviewOut,
     ApplicationChecklistOut,
+    ApplicationValidationOut,
+    ValidationRunHistoryOut,
 )
+from app.schemas.document_registry import DocumentTypeCorrectionCreate
 from app.api.deps import get_current_user, RoleChecker
 from app.models.enums import UserRole
 from app.services.regulatory_validation import (
@@ -26,23 +31,47 @@ from app.services.regulatory_validation import (
     build_preview_context,
     RegistryValidationError,
 )
-from app.services.document_processing import process_pdf, DocumentLimitError, DocumentProcessingError
+from app.services.document_processing import (
+    FIELD_EXTRACTION_VERSION,
+    process_pdf,
+    DocumentLimitError,
+    DocumentProcessingError,
+)
 from app.services.checklists import ChecklistConfigError, load_checklists, parse_unambiguous_date
 from app.services.documents import store_pdf, DocumentStorageError, DocumentTooLargeError, InvalidPDFError
+from app.services.image_evidence import (
+    EvidenceImageStorageError,
+    EvidenceImageTooLarge,
+    InvalidEvidenceImage,
+    store_and_assess_image,
+)
+from app.services.document_schema_validation import resolve_document_schema, validate_document_schema
 from app.services.consistency import ConsistencyService, ComparisonResult
 from datetime import datetime, timezone
+import hashlib
 import json
 import logging
 from pathlib import Path
 from fastapi.responses import FileResponse
 from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 from sqlalchemy import update
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stored_file:
+        for chunk in iter(lambda: stored_file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
 
 def _get_authorized_application(
     application_id: int,
@@ -167,10 +196,133 @@ def list_documents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _get_authorized_application(application_id, db, current_user)
+    application = _get_authorized_application(application_id, db, current_user)
     return db.query(Document).filter(
         Document.application_id == application_id
     ).order_by(Document.created_at.desc()).all()
+
+
+@router.post(
+    "/{application_id}/image-evidence",
+    response_model=ImageEvidenceOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def upload_image_evidence(
+    application_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    application = _get_authorized_application(application_id, db, current_user)
+    try:
+        storage_key, filename, digest, file_size, analysis = store_and_assess_image(
+            file.file,
+            file.filename or "",
+            file.content_type,
+            settings.DOCUMENT_STORAGE_DIR,
+        )
+    except EvidenceImageTooLarge as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=str(exc),
+        ) from exc
+    except InvalidEvidenceImage as exc:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=str(exc),
+        ) from exc
+    except EvidenceImageStorageError as exc:
+        logger.exception("Could not store image evidence")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not store image evidence",
+        ) from exc
+
+    image = ImageEvidence(
+        application_id=application.id,
+        uploader_id=current_user.id,
+        storage_key=storage_key,
+        original_filename=filename,
+        content_type="image/png" if Path(filename).suffix.lower() == ".png" else "image/jpeg",
+        sha256=digest,
+        file_size=file_size,
+        processing_status=analysis["status"],
+        analysis_result=analysis,
+    )
+    db.add(image)
+    audit_event = AuditEvent(
+        user_id=current_user.id,
+        action="image_evidence.quality_assessed",
+        entity_type="image_evidence",
+        entity_id="pending",
+        audit_metadata=json.dumps({
+            "application_id": application.id,
+            "file_size": file_size,
+            "processing_status": image.processing_status,
+            "analysis_version": analysis["analysis_version"],
+        }),
+    )
+    db.add(audit_event)
+    try:
+        db.flush()
+        audit_event.entity_id = str(image.id)
+        db.commit()
+        db.refresh(image)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        try:
+            (Path(settings.DOCUMENT_STORAGE_DIR) / "image-evidence" / storage_key).unlink(missing_ok=True)
+        except OSError:
+            logger.exception("Could not remove image after persistence failure")
+        logger.exception("Could not persist image evidence")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not save image evidence results",
+        ) from exc
+    return image
+
+
+@router.get(
+    "/{application_id}/image-evidence",
+    response_model=list[ImageEvidenceOut],
+)
+def list_image_evidence(
+    application_id: int,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    application = _get_authorized_application(application_id, db, current_user)
+    return (
+        db.query(ImageEvidence)
+        .filter(ImageEvidence.application_id == application.id)
+        .order_by(ImageEvidence.created_at.desc(), ImageEvidence.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+
+@router.get("/{application_id}/image-evidence/{image_id}/file")
+def download_image_evidence(
+    application_id: int,
+    image_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    application = _get_authorized_application(application_id, db, current_user)
+    image = db.query(ImageEvidence).filter(
+        ImageEvidence.id == image_id,
+        ImageEvidence.application_id == application.id,
+    ).first()
+    if image is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image evidence not found")
+    image_directory = (Path(settings.DOCUMENT_STORAGE_DIR) / "image-evidence").resolve()
+    path = (image_directory / image.storage_key).resolve()
+    if path.parent != image_directory or not path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Image evidence not found")
+    return FileResponse(path, media_type=image.content_type, filename=image.original_filename)
 
 
 @router.get("/{application_id}/documents/{document_id}/download")
@@ -233,6 +385,46 @@ def document_integrity_preview(
 
     storage_directory = Path(settings.DOCUMENT_STORAGE_DIR).resolve()
     storage_path = (storage_directory / document.storage_key).resolve()
+    if not document.sha256:
+        file_hash_check = {
+            "status": "not_available",
+            "stored_sha256": None,
+            "current_sha256": None,
+            "explanation": "No upload-time SHA-256 is available for comparison.",
+        }
+    elif storage_path.parent != storage_directory or not storage_path.is_file():
+        file_hash_check = {
+            "status": "unavailable",
+            "stored_sha256": document.sha256,
+            "current_sha256": None,
+            "explanation": "The stored file is unavailable, so its current hash could not be checked.",
+        }
+    else:
+        try:
+            current_sha256 = _sha256_file(storage_path)
+        except OSError:
+            logger.exception(
+                "Could not calculate stored-file hash for document_id=%s",
+                document.id,
+            )
+            file_hash_check = {
+                "status": "unavailable",
+                "stored_sha256": document.sha256,
+                "current_sha256": None,
+                "explanation": "The stored file could not be read, so its current hash could not be checked.",
+            }
+        else:
+            hash_matches = current_sha256.casefold() == document.sha256.casefold()
+            file_hash_check = {
+                "status": "match" if hash_matches else "mismatch",
+                "stored_sha256": document.sha256,
+                "current_sha256": current_sha256,
+                "explanation": (
+                    "The stored file bytes match the upload-time SHA-256."
+                    if hash_matches
+                    else "The stored file bytes differ from the upload-time SHA-256; this indicates a storage-integrity mismatch, not document fraud or authenticity."
+                ),
+            }
     page_count = None
     encrypted = None
     pdf_readable = False
@@ -261,6 +453,7 @@ def document_integrity_preview(
         "application_id": application.id,
         "document_id": document.id,
         "sha256": document.sha256,
+        "file_hash_check": file_hash_check,
         "duplicate_file_check": {
             "status": (
                 "unknown"
@@ -315,6 +508,7 @@ def document_integrity_preview(
         "limitations": [
             "Duplicate-file comparison is limited to documents attached to this application.",
             "A matching hash identifies identical file bytes; it does not establish whether a document is genuine.",
+            "The stored-file hash comparison checks whether current stored bytes match the upload-time hash; a mismatch does not establish fraud or issuer identity.",
             "PDF metadata and parser readability are user-controlled/heuristic signals, not authenticity evidence.",
             "No external issuer verification, fraud determination, or compliance decision was performed.",
         ],
@@ -355,7 +549,12 @@ def persist_document_integrity_check(
         action="document.integrity_checked",
         entity_type="document",
         entity_id=str(document_id),
-        audit_metadata=json.dumps({"application_id": application_id, "pdf_structure": preview["pdf_structure_check"]["status"], "duplicate_check": preview["duplicate_file_check"]["status"]}),
+        audit_metadata=json.dumps({
+            "application_id": application_id,
+            "pdf_structure": preview["pdf_structure_check"]["status"],
+            "duplicate_check": preview["duplicate_file_check"]["status"],
+            "file_hash_check": preview["file_hash_check"]["status"],
+        }),
     ))
     try:
         db.commit()
@@ -375,7 +574,7 @@ def process_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _get_authorized_application(application_id, db, current_user)
+    application = _get_authorized_application(application_id, db, current_user)
     document = db.query(Document).filter(
         Document.id == document_id,
         Document.application_id == application_id,
@@ -383,19 +582,79 @@ def process_document(
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    if document.processing_status in {"completed", "ocr_unavailable"} and document.processing_result:
+    stored_result = document.processing_result or {}
+    schema_context, active_schema = resolve_document_schema(
+        db, document.doc_type, document.original_filename, application.app_type
+    )
+    stored_schema = stored_result.get("schema_validation") or {}
+    schema_result_is_current = (
+        stored_schema.get("document_type_id") == document.doc_type
+        and (
+            stored_schema.get("schema_version_id") == schema_context.get("schema_version_id")
+            if schema_context.get("status") == "ready"
+            else stored_schema.get("status") == schema_context.get("status")
+        )
+    )
+    extraction_result_is_current = (
+        stored_result.get("field_extraction_version") == FIELD_EXTRACTION_VERSION
+        and document.processed_doc_type == document.doc_type
+        and schema_result_is_current
+    )
+    if document.processing_status == "completed" and extraction_result_is_current:
         return DocumentProcessingOut(
             document_id=document.id,
             processed_at=document.processed_at,
-            **document.processing_result,
+            **stored_result,
+        )
+    if (
+        document.processing_status == "ocr_unavailable"
+        and stored_result
+        and stored_result.get("field_extraction_version") == FIELD_EXTRACTION_VERSION
+    ):
+        if document.processed_doc_type == document.doc_type and schema_result_is_current:
+            return DocumentProcessingOut(
+                document_id=document.id,
+                processed_at=document.processed_at,
+                **stored_result,
+            )
+        stored_result["schema_validation"] = validate_document_schema(
+            schema_context,
+            active_schema,
+            stored_result.get("fields", {}),
+            document.processing_status,
+        )
+        document.processing_result = stored_result
+        document.processed_doc_type = document.doc_type
+        document.schema_version_id = schema_context.get("schema_version_id")
+        try:
+            db.commit()
+        except SQLAlchemyError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not save document schema status",
+            ) from exc
+        return DocumentProcessingOut(
+            document_id=document.id,
+            processed_at=document.processed_at,
+            **stored_result,
         )
 
-    claim = db.execute(
-        update(Document)
-        .where(
-            Document.id == document_id,
-            Document.processing_status.in_(("pending", "failed")),
+    claim_query = update(Document).where(Document.id == document_id)
+    if document.processing_status == "completed":
+        # A completed result from before the current extraction version is refreshed
+        # once on an explicit process request. Timestamp + status guard the claim
+        # against concurrent retries without interpreting backend-specific JSON.
+        claim_query = claim_query.where(
+            Document.processing_status == "completed",
+            Document.processed_at == document.processed_at,
         )
+    else:
+        claim_query = claim_query.where(
+            Document.processing_status.in_(("pending", "failed", "partial"))
+        )
+    claim = db.execute(
+        claim_query
         .values(processing_status="processing", processing_result=None)
         .execution_options(synchronize_session=False)
     )
@@ -415,6 +674,19 @@ def process_document(
     storage_path = (storage_directory / document.storage_key).resolve()
     if storage_path.parent != storage_directory or not storage_path.is_file():
         document.processing_status = "failed"
+        document.processing_result = {
+            "processing_status": "failed",
+            "extraction_method": "none",
+            "pages_processed": 0,
+            "fields": {},
+            "schema_validation": validate_document_schema(
+                schema_context, active_schema, {}, "failed"
+            ),
+            "warnings": ["Stored PDF is unavailable; document processing failed."],
+        }
+        document.processed_at = datetime.now(timezone.utc)
+        document.processed_doc_type = document.doc_type
+        document.schema_version_id = schema_context.get("schema_version_id")
         db.add(
             AuditEvent(
                 user_id=current_user.id,
@@ -424,10 +696,38 @@ def process_document(
                 audit_metadata=json.dumps({"reason": "stored_file_unavailable"}),
             )
         )
-        db.commit()
+        try:
+            db.commit()
+        except SQLAlchemyError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not save document processing failure",
+            ) from exc
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     try:
+        registered_document_types = []
+        for registered_type in db.query(DocumentType).order_by(DocumentType.id).all():
+            active_version = (
+                db.query(DocumentSchemaVersion)
+                .filter(
+                    DocumentSchemaVersion.document_type_id == registered_type.id,
+                    DocumentSchemaVersion.status == "active",
+                )
+                .order_by(
+                    DocumentSchemaVersion.activated_at.desc(),
+                    DocumentSchemaVersion.id.desc(),
+                )
+                .first()
+            )
+            registered_document_types.append({
+                "id": registered_type.id,
+                "display_name": registered_type.display_name,
+                "aliases": registered_type.aliases or [],
+                "status": registered_type.status,
+                "active_schema_version_id": active_version.id if active_version else None,
+            })
         result = process_pdf(
             storage_path,
             max_file_size=settings.DOCUMENT_MAX_SIZE_BYTES,
@@ -436,6 +736,8 @@ def process_document(
             max_text_chars=settings.DOCUMENT_PROCESSING_MAX_TEXT_CHARS,
             ocr_page_timeout=settings.DOCUMENT_OCR_PAGE_TIMEOUT_SECONDS,
             tesseract_cmd=settings.TESSERACT_CMD,
+            registered_document_types=registered_document_types,
+            schema_definition=active_schema.definition if active_schema else None,
         )
     except DocumentLimitError as exc:
         error_status = status.HTTP_422_UNPROCESSABLE_ENTITY
@@ -444,9 +746,32 @@ def process_document(
         error_status = status.HTTP_422_UNPROCESSABLE_ENTITY
         error_detail = str(exc)
     else:
+        schema_validation = validate_document_schema(
+            schema_context,
+            active_schema,
+            result.get("fields", {}),
+            result["processing_status"],
+        )
+        result["schema_validation"] = schema_validation
+        if schema_validation["status"] in {
+            "unknown_type",
+            "inactive_type",
+            "unsupported_format",
+            "unavailable",
+        }:
+            result["warnings"].append(schema_validation["reason"])
+        elif schema_validation["status"] == "invalid":
+            result["warnings"].append(
+                "Extracted fields do not satisfy the active document schema; reviewer verification is required."
+            )
         document.processing_status = result["processing_status"]
         document.processing_result = result
         document.processed_at = datetime.now(timezone.utc)
+        document.predicted_doc_type = (
+            (result.get("classification") or {}).get("candidate_document_type")
+        )
+        document.processed_doc_type = document.doc_type
+        document.schema_version_id = schema_context.get("schema_version_id")
         db.add(
             AuditEvent(
                 user_id=current_user.id,
@@ -478,9 +803,17 @@ def process_document(
         "extraction_method": "none",
         "pages_processed": 0,
         "fields": {},
+        "schema_validation": validate_document_schema(
+            schema_context,
+            active_schema,
+            {},
+            "failed",
+        ),
         "warnings": [error_detail],
     }
     document.processed_at = datetime.now(timezone.utc)
+    document.processed_doc_type = document.doc_type
+    document.schema_version_id = schema_context.get("schema_version_id")
     db.add(
             AuditEvent(
                 user_id=current_user.id,
@@ -521,6 +854,124 @@ def get_document_processing_result(
         processed_at=document.processed_at,
         **document.processing_result,
     )
+
+
+@router.post("/{application_id}/documents/{document_id}/type-corrections")
+def correct_document_type(
+    application_id: int,
+    document_id: int,
+    payload: DocumentTypeCorrectionCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role not in {UserRole.ADMIN.value, UserRole.REVIEWER.value}:
+        raise HTTPException(status_code=403, detail="Only administrators and reviewers can correct document types")
+    application = _get_authorized_application(application_id, db, current_user)
+    document = db.query(Document).filter(
+        Document.id == document_id,
+        Document.application_id == application_id,
+    ).first()
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    target_type = db.query(DocumentType).filter(
+        DocumentType.id == payload.document_type_id,
+    ).first()
+    if target_type is None:
+        raise HTTPException(status_code=404, detail="Document type not found in registry")
+    if target_type.status != "active":
+        raise HTTPException(status_code=409, detail="Only active document types can be selected")
+    schema_context, _ = resolve_document_schema(
+        db, target_type.id, document.original_filename, application.app_type
+    )
+    if schema_context["status"] != "ready":
+        raise HTTPException(status_code=409, detail=schema_context["reason"])
+    if document.doc_type == target_type.id:
+        raise HTTPException(status_code=409, detail="Document already has this selected type")
+
+    processing_result = document.processing_result or {}
+    classification = processing_result.get("classification") or {}
+    original_prediction = document.predicted_doc_type or classification.get("candidate_document_type")
+    correction = DocumentTypeCorrection(
+        document_id=document.id,
+        previous_document_type=document.doc_type,
+        corrected_document_type=target_type.id,
+        original_prediction=original_prediction,
+        reviewer_id=current_user.id,
+        reason=payload.reason,
+    )
+    document.doc_type = target_type.id
+    document.processing_status = "pending"
+    document.processing_result = None
+    document.processed_at = None
+    document.processed_doc_type = None
+    document.schema_version_id = None
+    db.add(correction)
+    db.add(AuditEvent(
+        user_id=current_user.id,
+        action="document.type_corrected",
+        entity_type="document",
+        entity_id=str(document.id),
+        audit_metadata=json.dumps({
+            "previous_document_type": correction.previous_document_type,
+            "corrected_document_type": correction.corrected_document_type,
+            "original_prediction": correction.original_prediction,
+        }),
+    ))
+    try:
+        db.commit()
+        db.refresh(correction)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Could not save document type correction") from exc
+    return {
+        "id": correction.id,
+        "document_id": correction.document_id,
+        "previous_document_type": correction.previous_document_type,
+        "corrected_document_type": correction.corrected_document_type,
+        "original_prediction": correction.original_prediction,
+        "reviewer_id": correction.reviewer_id,
+        "reason": correction.reason,
+        "created_at": correction.created_at,
+        "processing_status": document.processing_status,
+    }
+
+
+@router.get("/{application_id}/documents/{document_id}/type-corrections")
+def list_document_type_corrections(
+    application_id: int,
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.role not in {UserRole.ADMIN.value, UserRole.REVIEWER.value}:
+        raise HTTPException(status_code=403, detail="Only administrators and reviewers can view correction history")
+    _get_authorized_application(application_id, db, current_user)
+    document = db.query(Document).filter(
+        Document.id == document_id,
+        Document.application_id == application_id,
+    ).first()
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    corrections = (
+        db.query(DocumentTypeCorrection)
+        .filter(DocumentTypeCorrection.document_id == document.id)
+        .order_by(DocumentTypeCorrection.created_at, DocumentTypeCorrection.id)
+        .all()
+    )
+    return [
+        {
+            "id": item.id,
+            "document_id": item.document_id,
+            "previous_document_type": item.previous_document_type,
+            "corrected_document_type": item.corrected_document_type,
+            "original_prediction": item.original_prediction,
+            "reviewer_id": item.reviewer_id,
+            "reason": item.reason,
+            "created_at": item.created_at,
+        }
+        for item in corrections
+    ]
 
 
 @router.post(
@@ -642,7 +1093,11 @@ def validate_document(
     }
 
 
-@router.post("/{application_id}/validate-all", status_code=status.HTTP_200_OK)
+@router.post(
+    "/{application_id}/validate-all",
+    response_model=ApplicationValidationOut,
+    status_code=status.HTTP_200_OK,
+)
 def validate_application_all(
     application_id: int,
     db: Session = Depends(get_db),
@@ -650,181 +1105,1042 @@ def validate_application_all(
 ):
     application = _get_authorized_application(application_id, db, current_user)
 
+    started_at = datetime.now(timezone.utc)
+    stages: list[dict] = []
+    results: list[dict] = []
+    findings_to_create: list[dict] = []
+    errors: list[str] = []
+    consistency_comparisons: list[ComparisonResult] = []
+    integrity_results: list[dict] = []
+    registry_available = True
+
     try:
         rules_registry = load_registry()
-    except RegistryValidationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Regulatory registry unavailable: {str(exc)}"
+        stages.append({
+            "name": "regulatory_validation",
+            "status": "completed",
+            "reason": "Registry loaded; only approved rules with known applicability can be evaluated.",
+            "result_count": 0,
+        })
+    except RegistryValidationError:
+        logger.exception("Regulatory rule registry is unavailable")
+        registry_available = False
+        rules_registry = []
+        errors.append("Regulatory rule registry is unavailable.")
+        stages.append({
+            "name": "regulatory_validation",
+            "status": "unavailable",
+            "reason": "Regulatory rule registry is unavailable.",
+            "result_count": 0,
+        })
+
+    documents = (
+        db.query(Document)
+        .filter(Document.application_id == application.id)
+        .order_by(Document.id)
+        .all()
+    )
+    processing_attempts: list[dict] = []
+    for document in documents:
+        if document.processing_status != "pending":
+            continue
+        try:
+            processed = process_document(
+                application_id=application.id,
+                document_id=document.id,
+                db=db,
+                current_user=current_user,
+            )
+            processing_attempts.append({
+                "document_id": document.id,
+                "status": processed.processing_status,
+                "reason": "Document processing was run as part of application validation.",
+            })
+        except HTTPException as exc:
+            if exc.status_code >= status.HTTP_500_INTERNAL_SERVER_ERROR:
+                errors.append(
+                    f"Document processing could not be persisted for document {document.id}."
+                )
+                attempt_status = "failed"
+            elif exc.status_code == status.HTTP_409_CONFLICT:
+                attempt_status = "pending"
+            else:
+                attempt_status = "failed"
+            processing_attempts.append({
+                "document_id": document.id,
+                "status": attempt_status,
+                "http_status": exc.status_code,
+                "reason": (
+                    "Document processing is already in progress."
+                    if attempt_status == "pending"
+                    else "Document processing did not complete; see the document processing result."
+                ),
+            })
+            db.rollback()
+
+    documents = (
+        db.query(Document)
+        .filter(Document.application_id == application.id)
+        .order_by(Document.id)
+        .all()
+    )
+    if processing_attempts:
+        attempt_statuses = {attempt["status"] for attempt in processing_attempts}
+        orchestration_status = (
+            "completed"
+            if attempt_statuses == {"completed"}
+            else "pending"
+            if attempt_statuses == {"pending"}
+            else "partial"
         )
+        stages.append({
+            "name": "document_processing_orchestration",
+            "status": orchestration_status,
+            "reason": (
+                "All eligible documents were processed."
+                if orchestration_status == "completed"
+                else "One or more processing requests are still in progress."
+                if orchestration_status == "pending"
+                else "One or more document processing attempts did not complete."
+            ),
+            "result_count": len(processing_attempts),
+            "documents": processing_attempts,
+        })
+    else:
+        stages.append({
+            "name": "document_processing_orchestration",
+            "status": "skipped",
+            "reason": "No pending documents required processing.",
+            "result_count": 0,
+            "documents": [],
+        })
 
-    documents = db.query(Document).filter(
-        Document.application_id == application.id,
-        Document.processing_status == "completed"
-    ).all()
-
+    supported_document_types = {rule["document_type"] for rule in rules_registry}
+    documents_by_type: dict[str, list[Document]] = {}
+    document_stages = []
+    schema_validation_statuses = []
+    schema_validation_results = []
+    document_intelligence_results = []
+    for doc in documents:
+        documents_by_type.setdefault(doc.doc_type, []).append(doc)
+        stored_schema_result = (
+            doc.processing_result.get("schema_validation")
+            if isinstance(doc.processing_result, dict)
+            else None
+        )
+        if not isinstance(stored_schema_result, dict):
+            stored_schema_result = {}
+        schema_status = stored_schema_result.get("status", "not_evaluated")
+        schema_validation_statuses.append(schema_status)
+        schema_reason = stored_schema_result.get(
+            "reason",
+            "No persisted schema evaluation is available for this document.",
+        )
+        schema_validation_results.append({
+            "type": "document_schema_validation",
+            "document_id": doc.id,
+            "document_type": doc.doc_type,
+            "processing_status": doc.processing_status,
+            "status": schema_status,
+            "schema_version_id": stored_schema_result.get(
+                "schema_version_id", doc.schema_version_id
+            ),
+            "schema_version": stored_schema_result.get("schema_version"),
+            "registry_status": stored_schema_result.get("registry_status"),
+            "reason": schema_reason,
+            "fields": stored_schema_result.get("fields", []),
+            "unlisted_extracted_fields": stored_schema_result.get(
+                "unlisted_extracted_fields", []
+            ),
+            "human_review_required": stored_schema_result.get(
+                "human_review_required", True
+            ),
+            "disclaimer": stored_schema_result.get(
+                "disclaimer",
+                "No schema result is available; no authenticity or compliance conclusion is made.",
+            ),
+        })
+        processing_result = doc.processing_result if isinstance(doc.processing_result, dict) else {}
+        classification = processing_result.get("classification")
+        extracted_fields = processing_result.get("fields", {})
+        document_intelligence_results.append({
+            "type": "document_intelligence",
+            "document_id": doc.id,
+            "processing_status": doc.processing_status,
+            "extraction_method": processing_result.get("extraction_method"),
+            "field_extraction_version": processing_result.get("field_extraction_version"),
+            "processing_duration_ms": processing_result.get("processing_duration_ms"),
+            "ocr": processing_result.get("ocr"),
+            "unreadable_pages": processing_result.get("unreadable_pages", []),
+            "blank_pages": processing_result.get("blank_pages", []),
+            "classification": classification,
+            "fields": [
+                {
+                    "field_id": field_id,
+                    "status": field.get("status"),
+                    "raw_value": field.get("raw_value", field.get("value")),
+                    "page": field.get("page"),
+                    "evidence": field.get("evidence"),
+                    "coordinates": field.get("coordinates"),
+                    "confidence": field.get("confidence"),
+                    "method": field.get("method"),
+                    "extractor_version": field.get("extractor_version"),
+                    "verification_status": "unverified",
+                }
+                for field_id, field in extracted_fields.items()
+                if isinstance(field, dict)
+            ],
+            "warnings": processing_result.get("warnings", []),
+        })
+        if not registry_available:
+            stage_status = "unavailable"
+            reason = "Document rule support could not be determined because the registry is unavailable."
+        elif doc.doc_type not in supported_document_types:
+            stage_status = "unsupported"
+            reason = "No registry rule supports this document type."
+        elif doc.processing_status == "completed":
+            stage_status = "completed"
+            reason = "Document processing completed; extracted values remain unverified."
+        elif doc.processing_status == "partial":
+            stage_status = "partial"
+            reason = "Some pages or extraction stages were incomplete; available values remain unverified."
+        elif doc.processing_status in {"empty", "unreadable"}:
+            stage_status = "failed"
+            reason = "No reliable document text was extracted."
+        elif doc.processing_status in {"pending", "processing"}:
+            stage_status = "pending"
+            reason = "Document processing has not completed."
+        elif doc.processing_status == "failed":
+            stage_status = "failed"
+            reason = "Document processing failed; no validation was performed on this document."
+        elif doc.processing_status == "ocr_unavailable":
+            stage_status = "unavailable"
+            reason = "OCR was unavailable; document validation could not be performed."
+        else:
+            stage_status = "unavailable"
+            reason = "Document processing status is unknown; validation was not performed."
+        document_stages.append(
+            {
+                "document_id": doc.id,
+                "document_type": doc.doc_type,
+                "processing_status": doc.processing_status,
+                "status": stage_status,
+                "reason": reason,
+                "schema_validation_status": schema_status,
+                "schema_version_id": stored_schema_result.get(
+                    "schema_version_id", doc.schema_version_id
+                ),
+                "classification_status": (
+                    classification.get("status")
+                    if isinstance(classification, dict)
+                    else "unavailable"
+                ),
+                "extraction_method": processing_result.get("extraction_method"),
+            }
+        )
     if not documents:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No processed documents available for validation"
+        document_stage_status = "skipped"
+        document_stage_reason = "No documents are associated with this application."
+    else:
+        unsupported_or_blocked = any(
+            item["status"] in {"unsupported", "pending", "failed", "unavailable", "partial"}
+            for item in document_stages
         )
+        document_stage_status = "partial" if unsupported_or_blocked else "completed"
+        document_stage_reason = (
+            "One or more documents could not be fully processed or supported."
+            if unsupported_or_blocked
+            else "All associated documents are processed and supported; extracted values remain unverified."
+        )
+    stages.append({
+        "name": "document_processing",
+        "status": document_stage_status,
+        "reason": document_stage_reason,
+        "result_count": len(document_stages),
+        "documents": document_stages,
+    })
+    if not documents:
+        classification_stage_status = "skipped"
+        classification_stage_reason = "No documents are associated with this application."
+    elif any(item["classification_status"] == "unavailable" for item in document_stages):
+        classification_stage_status = "unavailable"
+        classification_stage_reason = "Classification was unavailable for one or more documents."
+    elif any(item["classification_status"] != "classified" for item in document_stages):
+        classification_stage_status = "partial"
+        classification_stage_reason = "One or more classifications abstained or require human review."
+    else:
+        classification_stage_status = "completed"
+        classification_stage_reason = "Registry-backed type suggestions were generated; confirmation remains a human responsibility."
+    stages.append({
+        "name": "document_classification",
+        "status": classification_stage_status,
+        "reason": classification_stage_reason,
+        "result_count": len(document_stages),
+    })
+    if not documents:
+        schema_stage_status = "skipped"
+        schema_stage_reason = "No documents are associated with this application."
+    elif all(value == "not_evaluated" for value in schema_validation_statuses):
+        schema_stage_status = "skipped"
+        schema_stage_reason = "No persisted document-schema results are available; schema evaluation was not performed."
+    elif all(value in {"valid", "invalid", "partial"} for value in schema_validation_statuses):
+        schema_stage_status = "partial" if "partial" in schema_validation_statuses else "completed"
+        schema_stage_reason = (
+            "Some schema checks used partial extraction; all results require human review."
+            if schema_stage_status == "partial"
+            else "Active schemas were applied; results validate data shape only and require human review."
+        )
+    elif any(value in {"valid", "invalid"} for value in schema_validation_statuses):
+        schema_stage_status = "partial"
+        schema_stage_reason = "Some documents lack an applicable completed schema evaluation."
+    elif all(value == "blocked" for value in schema_validation_statuses):
+        schema_stage_status = "failed"
+        schema_stage_reason = "Schema validation was blocked because document processing failed."
+    elif all(value == "not_applicable" for value in schema_validation_statuses):
+        schema_stage_status = "skipped"
+        schema_stage_reason = "Registered schemas are not applicable to this application category."
+    elif any(value in {"pending", "blocked"} for value in schema_validation_statuses):
+        schema_stage_status = "partial"
+        schema_stage_reason = "One or more schema evaluations are pending or blocked."
+    elif any(value == "not_applicable" for value in schema_validation_statuses):
+        schema_stage_status = "partial"
+        schema_stage_reason = "One or more registered schemas are not applicable to this application category."
+    elif any(value == "unavailable" for value in schema_validation_statuses):
+        schema_stage_status = "unavailable"
+        schema_stage_reason = "One or more active schema definitions are unavailable."
+    else:
+        schema_stage_status = "unsupported"
+        schema_stage_reason = "No active applicable schema was available for one or more documents."
+    stages.append({
+        "name": "document_schema_validation",
+        "status": schema_stage_status,
+        "reason": schema_stage_reason,
+        "result_count": len(document_stages),
+    })
 
-    results = []
-    findings_to_create = []
-    docs_by_type = {doc.doc_type: doc for doc in documents}
+    integrity_result_count = 0
+    integrity_failures = 0
+    if not documents:
+        stages.append({
+            "name": "document_integrity",
+            "status": "skipped",
+            "reason": "No documents are associated with this application.",
+            "result_count": 0,
+        })
+    else:
+        for doc in documents:
+            try:
+                integrity = document_integrity_preview(
+                    application.id,
+                    doc.id,
+                    db,
+                    current_user,
+                )
+                duplicate_finding_ids = [
+                    row[0]
+                    for row in db.query(Finding.id).filter(
+                        Finding.application_id == application.id,
+                        Finding.document_id == doc.id,
+                        Finding.finding_type == "Duplicate document",
+                        Finding.status == "open",
+                    ).all()
+                ]
+                integrity_results.append({
+                    "type": "document_integrity",
+                    "document_id": doc.id,
+                    "filename": doc.original_filename,
+                    "file_hash_check": integrity["file_hash_check"],
+                    "duplicate_file_check": integrity["duplicate_file_check"],
+                    "pdf_structure_check": integrity["pdf_structure_check"],
+                    "metadata_check": integrity["metadata_check"],
+                    "issuer_verification": integrity["issuer_verification"],
+                    "authenticity_status": integrity["authenticity_status"],
+                    "limitations": integrity["limitations"],
+                    "finding_ids": duplicate_finding_ids,
+                })
+                integrity_result_count += 1
+            except Exception:
+                logger.exception(
+                    "Document integrity preview failed for application_id=%s document_id=%s",
+                    application.id,
+                    doc.id,
+                )
+                integrity_failures += 1
+
+        if integrity_failures:
+            errors.append("Document integrity checks failed for one or more documents.")
+            integrity_status = (
+                "failed"
+                if integrity_result_count == 0
+                else "partial"
+            )
+            integrity_reason = (
+                "Integrity checks failed for all associated documents."
+                if integrity_result_count == 0
+                else "Some integrity checks failed; available results are preserved."
+            )
+        else:
+            integrity_status = "completed"
+            integrity_reason = (
+                "Existing duplicate, PDF-structure, and metadata checks ran. "
+                "Issuer verification was not performed and authenticity was not assessed."
+            )
+        stages.append({
+            "name": "document_integrity",
+            "status": integrity_status,
+            "reason": integrity_reason,
+            "result_count": integrity_result_count,
+        })
+
     # app_type is user-entered metadata, not verified institution or process
     # evidence. Applicability stays unknown until those facts are reviewed.
     application_scope = None
 
-    for rule in rules_registry:
-        eligibility = evaluate_preview_eligibility(rule, application_scope)
+    try:
+        for rule in rules_registry:
+            document_type = rule["document_type"]
+            rule_id = rule["rule_id"]
+            if not rule.get("preview_approved", False):
+                results.append({
+                    "type": "regulatory_rule",
+                    "rule_id": rule_id,
+                    "document_type": document_type,
+                    "status": "Not evaluated",
+                    "reason_code": "rule_unapproved",
+                    "explanation": "Candidate rule is not approved for evaluation; no rule assessment was performed.",
+                    "evidence": None,
+                    "evidence_refs": [],
+                })
+                continue
 
-        if eligibility == "not_applicable":
-            res = {
-                "rule_id": rule["rule_id"],
-                "status": "Not-Applicable",
-                "explanation": "The application scope does not match this rule.",
-                "evidence": None
+            eligibility = evaluate_preview_eligibility(rule, application_scope)
+            if eligibility == "not_applicable":
+                results.append({
+                    "type": "regulatory_rule",
+                    "rule_id": rule_id,
+                    "document_type": document_type,
+                    "status": "Not-Applicable",
+                    "reason_code": "not_applicable",
+                    "explanation": "The application scope does not match this rule.",
+                    "evidence": None,
+                    "evidence_refs": [],
+                })
+                continue
+            if eligibility == "unknown":
+                results.append({
+                    "type": "regulatory_rule",
+                    "rule_id": rule_id,
+                    "document_type": document_type,
+                    "status": "Not evaluated",
+                    "reason_code": "applicability_unknown",
+                    "explanation": "Application scope or required evidence is unavailable.",
+                    "evidence": None,
+                    "evidence_refs": [],
+                })
+                continue
+
+            matching_documents = documents_by_type.get(document_type, [])
+            completed_documents = [
+                doc for doc in matching_documents if doc.processing_status == "completed"
+            ]
+            if not completed_documents:
+                if any(doc.processing_status in {"pending", "processing"} for doc in matching_documents):
+                    reason_code = "document_pending"
+                    explanation = f"Document type '{document_type}' is present but processing is pending."
+                elif any(doc.processing_status == "failed" for doc in matching_documents):
+                    reason_code = "document_failed"
+                    explanation = f"Document type '{document_type}' is present but processing failed."
+                elif any(doc.processing_status == "ocr_unavailable" for doc in matching_documents):
+                    reason_code = "document_unavailable"
+                    explanation = f"Document type '{document_type}' is present but OCR is unavailable."
+                else:
+                    reason_code = "document_missing"
+                    explanation = f"No processed document of type '{document_type}' is available."
+                results.append({
+                    "type": "regulatory_rule",
+                    "rule_id": rule_id,
+                    "document_type": document_type,
+                    "status": "Not evaluated",
+                    "reason_code": reason_code,
+                    "explanation": explanation,
+                    "evidence": None,
+                    "evidence_refs": [],
+                })
+                continue
+
+            doc = completed_documents[-1]
+            doc_evidence = {
+                "document_id": doc.id,
+                "fields": doc.processing_result.get("fields", {}) if doc.processing_result else {},
             }
-            results.append(res)
-            continue
+            eval_result = evaluate_rule_result(rule, doc_evidence)
+            evaluation_status = eval_result["status"]
+            if evaluation_status in {"Pass", "Fail", "Needs review"}:
+                final_status = "Partial"
+                explanation = (
+                    "A non-authoritative field check returned a signal that requires "
+                    "human review; it does not establish regulatory compliance, "
+                    "non-compliance, or document authenticity."
+                )
+                reason_code = "review_required"
+            elif evaluation_status == "Not evaluated":
+                final_status = "Not evaluated"
+                explanation = eval_result["explanation"]
+                reason_code = (
+                    "unsupported_rule"
+                    if "No evaluator is implemented" in explanation
+                    else "insufficient_evidence"
+                )
+            elif evaluation_status == "Not-Applicable":
+                final_status = "Not-Applicable"
+                explanation = eval_result["explanation"]
+                reason_code = "not_applicable"
+            else:
+                final_status = "Not evaluated"
+                explanation = "The evaluator returned an unsupported result; no validation conclusion was made."
+                reason_code = "unsupported_result"
 
-        if eligibility == "unknown":
-            res = {
+            fields = doc_evidence["fields"]
+            relevant_fields = {
+                "FS-001": {"certificate_number"},
+                "FS-002": {"expiry_date"},
+            }.get(rule_id, set())
+            if eval_result.get("evidence"):
+                relevant_fields.update(
+                    field_name
+                    for field_name, field_value in fields.items()
+                    if isinstance(field_value, dict)
+                    and field_value.get("evidence") == eval_result["evidence"]
+                )
+            result = {
+                "type": "regulatory_rule",
+                "rule_id": rule_id,
+                "document_type": document_type,
+                "status": final_status,
+                "reason_code": reason_code,
+                "explanation": explanation,
+                "evidence": eval_result.get("evidence"),
+                "evidence_refs": _validation_evidence_references(doc, relevant_fields),
+            }
+            results.append(result)
+            if evaluation_status in {"Pass", "Fail", "Needs review"}:
+                findings_to_create.append({
+                    "finding_type": "Verification Required",
+                    "severity": "Medium",
+                    "description": explanation,
+                    "document_id": doc.id,
+                })
+        stages[0]["result_count"] = len(results)
+    except Exception:
+        logger.exception("Regulatory validation stage failed")
+        errors.append("Regulatory validation stage failed.")
+        stages[0]["status"] = "failed"
+        stages[0]["reason"] = "Rule evaluation failed; see server logs for diagnostic details."
+        recorded_rule_ids = {
+            result["rule_id"]
+            for result in results
+            if result.get("type") == "regulatory_rule"
+        }
+        for rule in rules_registry:
+            if rule["rule_id"] in recorded_rule_ids:
+                continue
+            results.append({
+                "type": "regulatory_rule",
                 "rule_id": rule["rule_id"],
+                "document_type": rule["document_type"],
                 "status": "Not evaluated",
-                "explanation": "Application scope or required evidence is unavailable.",
-                "evidence": None
-            }
-            results.append(res)
+                "reason_code": "evaluation_stage_failed",
+                "explanation": "Rule evaluation stopped after a stage error; this rule was not evaluated.",
+                "evidence": None,
+                "evidence_refs": [],
+            })
+
+    stages[0]["result_count"] = sum(
+        result.get("type") == "regulatory_rule" for result in results
+    )
+    results.extend(integrity_results)
+    registry_by_id = {rule["rule_id"]: rule for rule in rules_registry}
+    for result in results:
+        if result.get("type") != "regulatory_rule":
             continue
+        rule = registry_by_id.get(result["rule_id"], {})
+        rule_digest = hashlib.sha256(
+            json.dumps(
+                rule,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest() if rule else None
+        result["rule_reference"] = {
+            "rule_id": result["rule_id"],
+            "definition_sha256": rule_digest,
+            "preview_status": (
+                "approved_for_preview"
+                if rule.get("preview_approved", False)
+                else "not_approved_for_preview"
+            ),
+        }
+        source_reference = {
+            key: rule[key]
+            for key in ("handbook_version", "source_path", "section", "printed_page", "pdf_page")
+            if rule.get(key) is not None
+        }
+        result["candidate_requirement"] = rule.get("candidate_requirement")
+        result["preview_approved"] = rule.get("preview_approved", False)
+        result["source_reference"] = source_reference or None
 
-        doc = docs_by_type.get(rule["document_type"])
-        if not doc:
-            res = {
-                "rule_id": rule["rule_id"],
-                "status": "Fail",
-                "explanation": f"Required document of type '{rule['document_type']}' is missing.",
-                "evidence": None
+    checklist_result: Optional[dict] = None
+    try:
+        checklist_items, checklist_findings = _evaluate_application_checklist(application, db)
+        checklist_result = {
+            "source": "synthetic_demo",
+            "items": [
+                {
+                    **item,
+                    "evidence_refs": [
+                        reference
+                        for document_id in item["document_ids"]
+                        for document in documents
+                        if document.id == document_id
+                        for reference in _validation_evidence_references(document)
+                    ],
+                }
+                for item in checklist_items
+            ],
+        }
+        results.append({
+            "type": "application_checklist",
+            "source": "synthetic_demo",
+            **checklist_result,
+        })
+        findings_to_create.extend(checklist_findings)
+        stages.append({
+            "name": "application_checklist",
+            "status": "completed",
+            "reason": "Synthetic checklist executed; it is not an official regulatory determination.",
+            "result_count": len(checklist_items),
+        })
+    except HTTPException as exc:
+        checklist_status = "unsupported" if exc.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY else "unavailable"
+        errors.append(f"Application checklist stage {checklist_status}.")
+        stages.append({
+            "name": "application_checklist",
+            "status": checklist_status,
+            "reason": "Synthetic checklist could not be evaluated for this application.",
+            "result_count": 0,
+        })
+    except Exception:
+        logger.exception("Application checklist stage failed")
+        errors.append("Application checklist stage failed.")
+        stages.append({
+            "name": "application_checklist",
+            "status": "failed",
+            "reason": "Checklist execution failed; see server logs for diagnostic details.",
+            "result_count": 0,
+        })
+
+    completed_documents = [doc for doc in documents if doc.processing_status == "completed"]
+    if len(completed_documents) < 2:
+        stages.append({
+            "name": "cross_document_consistency",
+            "status": "skipped",
+            "reason": "At least two processed documents are required for comparison.",
+            "result_count": 0,
+        })
+    else:
+        try:
+            consistency_service = ConsistencyService()
+            for index, doc1 in enumerate(completed_documents):
+                fields1 = doc1.processing_result.get("fields", {}) if doc1.processing_result else {}
+                for doc2 in completed_documents[index + 1:]:
+                    fields2 = doc2.processing_result.get("fields", {}) if doc2.processing_result else {}
+                    for field_name in consistency_service.comparable_fields:
+                        comparison = consistency_service.compare_fields(
+                            field_name,
+                            fields1.get(field_name),
+                            doc1.id,
+                            fields2.get(field_name),
+                            doc2.id,
+                        )
+                        if comparison.category != "NOT_APPLICABLE":
+                            consistency_comparisons.append(comparison)
+                            results.append({
+                                "type": "consistency",
+                                "field": comparison.field,
+                                "category": comparison.category,
+                                "document_ids": [comparison.doc1_id, comparison.doc2_id],
+                                "values": [comparison.val1, comparison.val2],
+                                "explanation": comparison.explanation,
+                                "human_review_recommended": comparison.human_review_recommended,
+                                "evidence_refs": [
+                                    *_validation_evidence_references(doc1, {comparison.field}),
+                                    *_validation_evidence_references(doc2, {comparison.field}),
+                                ],
+                            })
+            stages.append({
+                "name": "cross_document_consistency",
+                "status": "completed",
+                "reason": "Existing cross-document comparisons were executed on extracted values only.",
+                "result_count": len(consistency_comparisons),
+            })
+        except Exception:
+            logger.exception("Cross-document consistency stage failed")
+            errors.append("Cross-document consistency stage failed.")
+            consistency_comparisons = []
+            stages.append({
+                "name": "cross_document_consistency",
+                "status": "failed",
+                "reason": "Consistency execution failed; see server logs for diagnostic details.",
+                "result_count": 0,
+            })
+
+    image_evidence_rows = (
+        db.query(ImageEvidence)
+        .filter(
+            ImageEvidence.application_id == application.id,
+            ImageEvidence.validation_run_id.is_(None),
+        )
+        .order_by(ImageEvidence.id)
+        .all()
+    )
+    if image_evidence_rows:
+        image_results = [
+            {
+                "type": "infrastructure_image_quality",
+                "image_evidence_id": item.id,
+                "filename": item.original_filename,
+                "sha256": item.sha256,
+                "processing_status": item.processing_status,
+                "analysis": item.analysis_result,
+                "evidence_status": "stored",
+                "human_review_required": True,
+                "limitation": (
+                    "This deterministic quality assessment does not identify infrastructure "
+                    "objects, determine regulatory compliance, or authenticate the image."
+                ),
             }
-            results.append(res)
-            findings_to_create.append({
-                "finding_type": "Missing Document",
-                "severity": "High",
-                "description": f"Missing required document: {rule['document_type']}",
-                "document_id": None
-            })
-            continue
+            for item in image_evidence_rows
+        ]
+        results.extend(image_results)
+        quality_limited = any(
+            item.processing_status == "quality_limited" for item in image_evidence_rows
+        )
+        stages.append({
+            "name": "infrastructure_image_quality",
+            "status": "partial" if quality_limited else "completed",
+            "reason": (
+                "Image-quality signals are available; all images require human review and no object detection or compliance decision was performed."
+            ),
+            "result_count": len(image_evidence_rows),
+        })
+    else:
+        stages.append({
+            "name": "infrastructure_image_quality",
+            "status": "skipped",
+            "reason": "No unlinked image evidence was available for this validation run.",
+            "result_count": 0,
+        })
+    results.extend(document_intelligence_results)
+    results.extend(schema_validation_results)
+    evaluated_rules_count = sum(
+        result["reason_code"] in {"evaluated", "review_required"}
+        for result in results
+        if result.get("type") == "regulatory_rule"
+    )
+    not_applicable_rules_count = sum(
+        result["status"] == "Not-Applicable"
+        for result in results
+        if result.get("type") == "regulatory_rule"
+    )
+    not_evaluated_rules_count = sum(
+        result["status"] == "Not evaluated"
+        for result in results
+        if result.get("type") == "regulatory_rule"
+    )
+    validation_status = (
+        "inconclusive"
+        if evaluated_rules_count == 0
+        else "partial"
+        if not_evaluated_rules_count > 0
+        or any(
+            result["status"] == "Partial"
+            for result in results
+            if result.get("type") == "regulatory_rule"
+        )
+        or any(
+            stage["status"] in {"partial", "failed", "unavailable", "unsupported"}
+            for stage in stages
+        )
+        else "completed"
+    )
 
-        doc_evidence = {
-            "document_id": doc.id,
-            "fields": doc.processing_result.get("fields", {}) if doc.processing_result else {}
-        }
-        eval_result = evaluate_rule_result(rule, doc_evidence)
-
-        status_map = {
-            "Pass": "Compliant",
-            "Fail": "Non-Compliant",
-            "Needs review": "Partial",
-            "Not evaluated": "Not evaluated",
-            "Not-Applicable": "Not-Applicable",
-        }
-
-        # Never turn missing scope/evidence into a pass, failure, or non-applicability.
-        final_status = status_map.get(eval_result["status"], "Not evaluated")
-
-        res = {
-            "rule_id": rule["rule_id"],
-            "status": final_status,
-            "explanation": eval_result["explanation"],
-            "evidence": eval_result["evidence"]
-        }
-        results.append(res)
-
-        if eval_result["status"] == "Fail":
-            findings_to_create.append({
-                "finding_type": "Regulatory Violation",
-                "severity": "High",
-                "description": eval_result["explanation"],
-                "document_id": doc.id
-            })
-        elif eval_result["status"] == "Needs review":
-            findings_to_create.append({
-                "finding_type": "Verification Required",
-                "severity": "Medium",
-                "description": eval_result["explanation"],
-                "document_id": doc.id
-            })
-
-    for r in results:
-        db_rule = db.query(ComplianceRule).filter(ComplianceRule.rule_code == r["rule_id"]).first()
-        if not db_rule:
-            db_rule = ComplianceRule(
-                rule_code=r["rule_id"],
-                title=f"Rule {r['rule_id']}",
-                description="Synthetic rule from registry",
-                category="Fire Safety",
-                is_active=True
-            )
-            db.add(db_rule)
-            db.flush()
-
-        # Keep changed assessment snapshots as history, but don't add the same
-        # result again on every validation click. Each attempted run is already
-        # represented by its append-only audit event below. This also preserves
-        # any reviewer assignment on an identical existing snapshot.
-        existing_snapshot = db.query(ComplianceAssessment.id).filter(
-            ComplianceAssessment.application_id == application.id,
-            ComplianceAssessment.rule_id == db_rule.id,
-            ComplianceAssessment.status == r["status"],
-            ComplianceAssessment.explanation == r["explanation"],
-        ).first()
-        if existing_snapshot is None:
-            db.add(ComplianceAssessment(
-                application_id=application.id,
-                rule_id=db_rule.id,
-                status=r["status"],
-                explanation=r["explanation"],
-                reviewer_id=None,
-            ))
+    execution_status = (
+        "partial"
+        if errors or any(stage["status"] in {"partial", "failed", "unavailable", "unsupported"} for stage in stages)
+        else "completed"
+    )
+    run = ValidationRun(
+        application_id=application.id,
+        user_id=current_user.id,
+        started_at=started_at,
+        completed_at=datetime.now(timezone.utc),
+        execution_status=execution_status,
+        outcome=validation_status,
+        stage_outcomes=stages,
+        results=results,
+        error_summary=" ".join(errors) or None,
+        evaluated_rules_count=evaluated_rules_count,
+        not_evaluated_rules_count=not_evaluated_rules_count,
+        not_applicable_rules_count=not_applicable_rules_count,
+    )
+    db.add(run)
 
     findings_created = 0
-    for f in findings_to_create:
-        existing_finding = db.query(Finding.id).filter(
-            Finding.application_id == application.id,
-            Finding.document_id == f["document_id"],
-            Finding.finding_type == f["finding_type"],
-            Finding.description == f["description"],
-            Finding.status == "open",
-        ).first()
-        if existing_finding is not None:
-            continue
-        db.add(Finding(
-            application_id=application.id,
-            document_id=f["document_id"],
-            finding_type=f["finding_type"],
-            severity=f["severity"],
-            description=f["description"],
-            status="open",
+    persisted_findings: list[Finding] = []
+    try:
+        db.flush()
+        for image_evidence in image_evidence_rows:
+            image_evidence.validation_run_id = run.id
+        for result in results:
+            if result.get("type") != "regulatory_rule":
+                continue
+            rule_id = result["rule_id"]
+            db_rule = db.query(ComplianceRule).filter(ComplianceRule.rule_code == rule_id).first()
+            if not db_rule:
+                db_rule = ComplianceRule(
+                    rule_code=rule_id,
+                    title=f"Rule {rule_id}",
+                    description="Registry candidate; no authoritative rule text is stored in this assessment.",
+                    category="Unclassified",
+                    is_active=True,
+                )
+                db.add(db_rule)
+                db.flush()
+
+            existing_snapshot = db.query(ComplianceAssessment).filter(
+                ComplianceAssessment.application_id == application.id,
+                ComplianceAssessment.rule_id == db_rule.id,
+                ComplianceAssessment.status == result["status"],
+                ComplianceAssessment.explanation == result["explanation"],
+            ).first()
+            if existing_snapshot is None:
+                existing_snapshot = ComplianceAssessment(
+                    application_id=application.id,
+                    rule_id=db_rule.id,
+                    status=result["status"],
+                    explanation=result["explanation"],
+                    reviewer_id=None,
+                )
+                db.add(existing_snapshot)
+                db.flush()
+            run.assessments.append(existing_snapshot)
+
+        if len(completed_documents) >= 2 and any(
+            stage["name"] == "cross_document_consistency" and stage["status"] == "completed"
+            for stage in stages
+        ):
+            consistency_run = ConsistencyRun(
+                application_id=application.id,
+                user_id=current_user.id,
+                validation_run_id=run.id,
+                status="completed",
+                comparisons_count=len(consistency_comparisons),
+            )
+            db.add(consistency_run)
+            db.flush()
+            for comparison in consistency_comparisons:
+                db.add(DocumentConsistencyResult(
+                    run=consistency_run,
+                    application_id=application.id,
+                    field=comparison.field,
+                    category=comparison.category,
+                    val1=comparison.val1,
+                    val2=comparison.val2,
+                    norm1=comparison.norm1,
+                    norm2=comparison.norm2,
+                    doc1_id=comparison.doc1_id,
+                    doc2_id=comparison.doc2_id,
+                    explanation=comparison.explanation,
+                    human_review_recommended=comparison.human_review_recommended,
+                ))
+
+        for candidate in findings_to_create:
+            finding = db.query(Finding).filter(
+                Finding.application_id == application.id,
+                Finding.document_id == candidate.get("document_id"),
+                Finding.finding_type == candidate["finding_type"],
+                Finding.description == candidate["description"],
+                Finding.status == "open",
+            ).first()
+            if finding is None:
+                finding = Finding(
+                    application_id=application.id,
+                    document_id=candidate.get("document_id"),
+                    finding_type=candidate["finding_type"],
+                    severity=candidate["severity"],
+                    description=candidate["description"],
+                    status="open",
+                )
+                db.add(finding)
+                db.flush()
+                findings_created += 1
+            persisted_findings.append(finding)
+
+        existing_finding_ids = {
+            finding.id for finding in persisted_findings
+        }
+        for result in results:
+            if result.get("type") != "document_integrity":
+                continue
+            existing_finding_ids.update(result.get("finding_ids", []))
+
+        findings_by_id = {
+            finding.id: finding
+            for finding in persisted_findings
+        }
+        if existing_finding_ids:
+            findings_by_id.update({
+                finding.id: finding
+                for finding in db.query(Finding).filter(
+                    Finding.id.in_(existing_finding_ids),
+                    Finding.application_id == application.id,
+                ).all()
+            })
+        for finding in findings_by_id.values():
+            document = next(
+                (doc for doc in documents if doc.id == finding.document_id),
+                None,
+            )
+            results.append({
+                "type": "finding",
+                "finding_id": finding.id,
+                "finding_type": finding.finding_type,
+                "severity": finding.severity,
+                "status": finding.status,
+                "document_id": finding.document_id,
+                "description": finding.description,
+                "evidence_refs": (
+                    _validation_evidence_references(document)
+                    if document is not None
+                    else []
+                ),
+            })
+
+        run.results = [*results]
+        flag_modified(run, "results")
+        db.flush()
+
+        db.add(AuditEvent(
+            user_id=current_user.id,
+            action="application.validate_all",
+            entity_type="application",
+            entity_id=str(application.id),
+            audit_metadata=json.dumps(
+                {
+                    "validation_run_id": run.id,
+                    "execution_status": execution_status,
+                    "validation_status": validation_status,
+                    "rules_evaluated": evaluated_rules_count,
+                    "rules_not_evaluated": not_evaluated_rules_count,
+                    "rules_not_applicable": not_applicable_rules_count,
+                    "findings_created": findings_created,
+                    "document_stages": document_stages,
+                    "stage_outcomes": stages,
+                }
+            ),
         ))
-        findings_created += 1
 
-    db.add(AuditEvent(
-        user_id=current_user.id,
-        action="application.validate_all",
-        entity_type="application",
-        entity_id=str(application.id),
-        audit_metadata=json.dumps({"rules_evaluated": len(results), "findings_created": findings_created})
-    ))
-
-    db.commit()
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.exception("Failed to persist application validation results")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Application validation results could not be saved.",
+        ) from exc
 
     return {
         "application_id": application.id,
+        "run_id": run.id,
+        "execution_status": execution_status,
+        "status": validation_status,
+        "evaluated_rules_count": evaluated_rules_count,
+        "not_evaluated_rules_count": not_evaluated_rules_count,
+        "not_applicable_rules_count": not_applicable_rules_count,
+        "document_stages": document_stages,
+        "stages": stages,
         "results": results,
         "findings_count": findings_created,
-        "status": "completed"
+        "error_summary": run.error_summary,
     }
+
+
+def _validation_evidence_references(
+    document: Document,
+    field_names: Optional[set[str]] = None,
+) -> list[dict]:
+    processing_result = document.processing_result or {}
+    fields = processing_result.get("fields", {})
+    if not isinstance(fields, dict):
+        return []
+    ocr_result = processing_result.get("ocr")
+    ocr_provenance = None
+    if isinstance(ocr_result, dict):
+        ocr_provenance = {
+            key: ocr_result[key]
+            for key in ("engine", "engine_version", "languages", "status")
+            if ocr_result.get(key) is not None
+        }
+    processing_provenance = {
+        "document_sha256": document.sha256,
+        "document_type": document.processed_doc_type or document.doc_type,
+        "processing_status": document.processing_status,
+        "processed_at": document.processed_at.isoformat() if document.processed_at else None,
+        "schema_version_id": document.schema_version_id,
+        "extraction_method": processing_result.get("extraction_method"),
+        "field_extraction_version": processing_result.get("field_extraction_version"),
+        "ocr": ocr_provenance,
+    }
+    references = []
+    for field_name, field_value in fields.items():
+        if field_names is not None and field_name not in field_names:
+            continue
+        if not isinstance(field_value, dict):
+            continue
+        excerpt = field_value.get("evidence")
+        page = field_value.get("page")
+        reference = {
+            "document_id": document.id,
+            "filename": document.original_filename,
+            "field": field_name,
+            "verification_status": "unverified",
+            "evidence_status": "available" if excerpt is not None or page is not None else "unavailable",
+            "processing_provenance": processing_provenance,
+        }
+        if page is not None:
+            reference["page"] = page
+        if excerpt is not None:
+            reference["excerpt"] = excerpt
+        references.append(reference)
+    return references
+
+
+@router.get("/{application_id}/validation-runs", response_model=ValidationRunHistoryOut)
+def list_application_validation_runs(
+    application_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    _get_authorized_application(application_id, db, current_user)
+    runs = (
+        db.query(ValidationRun)
+        .filter(ValidationRun.application_id == application_id)
+        .order_by(ValidationRun.started_at.desc(), ValidationRun.id.desc())
+        .all()
+    )
+    return {"items": runs}
+
 
 @router.post("/{application_id}/validate-consistency", status_code=status.HTTP_200_OK)
 def validate_application_consistency(

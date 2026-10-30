@@ -32,6 +32,12 @@ _SAFE_METADATA_KEYS = {
     "outcome",
     "findings_created",
     "rules_evaluated",
+    "document_type_id",
+    "previous_document_type",
+    "corrected_document_type",
+    "original_prediction",
+    "schema_version",
+    "status",
 }
 
 

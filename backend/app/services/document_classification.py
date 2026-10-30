@@ -1,117 +1,165 @@
-"""Conservative, content-based document type suggestions for the demo workflow."""
+"""Registry-backed, deterministic document type suggestions."""
 
-import json
-from pathlib import Path
+import re
 from typing import Any
 
 from app.services.document_processing import PageText
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_CLASSIFICATION_PATH = (
-    PROJECT_ROOT / "data" / "processed" / "document_categories.json"
-)
+CLASSIFIER_NAME = "registry_alias_matcher"
+CLASSIFIER_VERSION = "1"
 
 
-class DocumentClassificationConfigError(ValueError):
-    """Raised when the operator-maintained category config is invalid."""
-
-
-def _load_categories(path: Path | None = None) -> list[dict[str, Any]]:
-    try:
-        with (path or DEFAULT_CLASSIFICATION_PATH).open(encoding="utf-8") as source:
-            config = json.load(source)
-    except (OSError, json.JSONDecodeError) as exc:
-        raise DocumentClassificationConfigError from exc
-
-    categories = config.get("categories") if isinstance(config, dict) else None
-    if not isinstance(categories, list) or not categories:
-        raise DocumentClassificationConfigError("categories must be a non-empty list")
-
-    seen: set[str] = set()
-    for category in categories:
-        if not isinstance(category, dict):
-            raise DocumentClassificationConfigError("each category must be an object")
-        document_type = category.get("document_type")
-        signals = category.get("signals")
-        if (
-            not isinstance(document_type, str)
-            or not document_type.strip()
-            or document_type in seen
-            or not isinstance(signals, list)
-            or not signals
-            or not all(isinstance(signal, str) and signal.strip() for signal in signals)
-        ):
-            raise DocumentClassificationConfigError("category definitions are invalid")
-        seen.add(document_type)
-    return categories
+def _contains_phrase(text: str, phrase: str) -> bool:
+    escaped = re.escape(phrase.strip().casefold())
+    return bool(re.search(rf"(?<!\w){escaped}(?!\w)", text.casefold()))
 
 
 def classify_document_text(
-    pages: list[PageText], *, config_path: Path | None = None
+    pages: list[PageText],
+    registered_types: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Suggest a type only from configured text signals; never auto-verify a document."""
-    categories = _load_categories(config_path)
-    matches_by_type: dict[str, list[dict[str, Any]]] = {}
-
-    for category in categories:
-        document_type = category["document_type"]
-        evidence: list[dict[str, Any]] = []
-        seen_signals: set[str] = set()
-        for page in pages:
-            for line in page.text.splitlines():
-                normalized_line = " ".join(line.split())
-                folded_line = normalized_line.casefold()
-                for signal in category["signals"]:
-                    folded_signal = signal.strip().casefold()
-                    if folded_signal in folded_line and folded_signal not in seen_signals:
-                        seen_signals.add(folded_signal)
-                        evidence.append({
-                            "page": page.number,
-                            "signal": signal,
-                            "excerpt": normalized_line[:300],
-                        })
-        if evidence:
-            matches_by_type[document_type] = evidence
-
-    if not matches_by_type:
+    """Suggest a registered type from text aliases without changing the selected type."""
+    extracted_text = "\n".join(page.text for page in pages if page.text.strip())
+    base_result = {
+        "classifier": CLASSIFIER_NAME,
+        "classifier_version": CLASSIFIER_VERSION,
+        "score_kind": "heuristic_match_ratio",
+        "human_review_required": True,
+    }
+    if not extracted_text.strip():
         return {
+            **base_result,
             "status": "needs_review",
             "candidate_document_type": None,
+            "candidate_alternatives": [],
+            "heuristic_score": None,
+            "registry_status": None,
+            "schema_version_id": None,
             "match_strength": "none",
+            "abstention_reason": "insufficient_text",
             "evidence": [],
-            "explanation": "No configured category signals were found in extracted text; assign the document type manually.",
+            "explanation": "No text was extracted; assign or confirm the document type manually.",
         }
 
-    highest = max(len(evidence) for evidence in matches_by_type.values())
-    winners = [
-        document_type
-        for document_type, evidence in matches_by_type.items()
-        if len(evidence) == highest
-    ]
-    if len(winners) != 1:
+    matches: list[dict[str, Any]] = []
+    for registered_type in registered_types:
+        type_id = registered_type.get("id")
+        if not isinstance(type_id, str) or not type_id:
+            continue
+        aliases = registered_type.get("aliases")
+        aliases = aliases if isinstance(aliases, list) else []
+        display_name = registered_type.get("display_name")
+        phrases = list(dict.fromkeys(
+            phrase.strip()
+            for phrase in [*aliases, display_name, type_id.replace("_", " ")]
+            if isinstance(phrase, str) and phrase.strip()
+        ))
+        matched = [
+            {"signal": phrase, "page": page.number, "excerpt": line[:300]}
+            for phrase in phrases
+            for page in pages
+            for line in page.text.splitlines()
+            if _contains_phrase(line, phrase)
+        ]
+        if matched:
+            matches.append({
+                "document_type": registered_type,
+                "signals": matched,
+                "unique_signal_count": len({item["signal"].casefold() for item in matched}),
+                "signal_count": max(1, len(phrases)),
+            })
+
+    if not matches:
         return {
+            **base_result,
             "status": "needs_review",
             "candidate_document_type": None,
-            "match_strength": "possible",
-            "evidence": [
-                {"document_type": name, **match}
-                for name in winners
-                for match in matches_by_type[name]
-            ],
-            "explanation": "Extracted text matches multiple configured categories equally; reviewer classification is required.",
+            "candidate_alternatives": [],
+            "heuristic_score": None,
+            "registry_status": None,
+            "schema_version_id": None,
+            "match_strength": "none",
+            "abstention_reason": "unknown_document_type",
+            "evidence": [],
+            "explanation": "No active or draft registry type matched the extracted text; manual type selection is required.",
         }
 
-    candidate = winners[0]
-    evidence = matches_by_type[candidate]
-    strength = "strong" if len(evidence) >= 2 else "possible"
-    return {
-        "status": "classified" if strength == "strong" else "needs_review",
-        "candidate_document_type": candidate,
-        "match_strength": strength,
-        "evidence": evidence,
-        "explanation": (
-            f"Extracted text matched {len(evidence)} configured signal(s) for '{candidate}'. "
-            "This is a type suggestion only; confirm it against the document."
+    matches.sort(
+        key=lambda item: (
+            item["unique_signal_count"],
+            len(item["signals"]),
+            item["document_type"].get("id", ""),
         ),
+        reverse=True,
+    )
+    best = matches[0]
+    best_rank = (best["unique_signal_count"], len(best["signals"]))
+    tied = [
+        item for item in matches
+        if (item["unique_signal_count"], len(item["signals"])) == best_rank
+    ]
+    if len(tied) > 1:
+        return {
+            **base_result,
+            "status": "needs_review",
+            "candidate_document_type": None,
+            "candidate_alternatives": [
+                item["document_type"]["id"] for item in tied
+            ],
+            "heuristic_score": None,
+            "registry_status": None,
+            "schema_version_id": None,
+            "match_strength": "possible",
+            "abstention_reason": "ambiguous_match",
+            "evidence": [
+                {
+                    **signal,
+                    "document_type": item["document_type"]["id"],
+                }
+                for item in tied
+                for signal in item["signals"]
+            ],
+            "explanation": "Extracted text matches multiple registry types equally; reviewer classification is required.",
+        }
+
+    registry_type = best["document_type"]
+    registry_status = registry_type.get("status", "unknown")
+    score = best["unique_signal_count"] / best["signal_count"]
+    strength = "strong" if best["unique_signal_count"] >= 2 else "possible"
+    if registry_status != "active":
+        status_value = "needs_review"
+        abstention_reason = "inactive_registry_type"
+        explanation = (
+            f"Text matched inactive registry type '{registry_type['id']}'; it cannot be selected automatically."
+        )
+    elif best["unique_signal_count"] < 2:
+        status_value = "needs_review"
+        abstention_reason = "low_confidence"
+        explanation = (
+            f"Text matched one configured signal for '{registry_type['id']}'; reviewer confirmation is required."
+        )
+    else:
+        status_value = "classified"
+        abstention_reason = None
+        explanation = (
+            f"Text matched {best['unique_signal_count']} configured registry aliases for "
+            f"'{registry_type['id']}'. This is a type suggestion only; its heuristic score is not "
+            "a calibrated probability, and it must be confirmed against the document."
+        )
+    return {
+        **base_result,
+        "status": status_value,
+        "candidate_document_type": registry_type["id"],
+        "candidate_alternatives": [],
+        "heuristic_score": round(score, 4),
+        "registry_status": registry_status,
+        "schema_version_id": registry_type.get("active_schema_version_id"),
+        "match_strength": strength,
+        "abstention_reason": abstention_reason,
+        "evidence": [
+            {**signal, "document_type": registry_type["id"]}
+            for signal in best["signals"]
+        ],
+        "explanation": explanation,
     }

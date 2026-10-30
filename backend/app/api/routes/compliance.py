@@ -1,4 +1,5 @@
 import json
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import SQLAlchemyError
@@ -12,6 +13,7 @@ from app.models.models import (
     AuditEvent,
     ComplianceAssessment,
     ComplianceAssessmentReview,
+    ComplianceAssessmentStatusHistory,
     ComplianceRule,
     Document,
     User,
@@ -25,6 +27,7 @@ from app.schemas.applications import (
     ComplianceAssessmentDetailOut,
     ComplianceAssessmentReviewCreate,
     ComplianceAssessmentReviewOut,
+    ComplianceAssessmentStatusUpdate,
 )
 
 
@@ -62,6 +65,26 @@ def _assessment_review_out(review: ComplianceAssessmentReview) -> dict[str, obje
         "note": review.note,
         "created_at": review.created_at,
     }
+
+
+def _review_status_history(
+    assessment_id: int,
+    db: Session,
+    include_reason: bool,
+) -> list[dict[str, object]]:
+    entries = db.query(ComplianceAssessmentStatusHistory).filter(
+        ComplianceAssessmentStatusHistory.assessment_id == assessment_id
+    ).order_by(
+        ComplianceAssessmentStatusHistory.created_at,
+        ComplianceAssessmentStatusHistory.id,
+    ).all()
+    return [{
+        "reviewer_id": entry.reviewer_id,
+        "from_status": entry.from_status,
+        "to_status": entry.to_status,
+        "reason": entry.reason if include_reason else None,
+        "created_at": entry.created_at,
+    } for entry in entries]
 
 
 @router.get("/reviewers", response_model=list[dict[str, object]])
@@ -112,6 +135,7 @@ def get_compliance_assessment(
         "rule_title": rule.title,
         "category": rule.category,
         "status": assessment.status,
+        "review_status": assessment.review_status,
         "explanation": assessment.explanation,
         "assessed_at": assessment.assessed_at,
         "reviewer_name": assessment.reviewer.full_name if assessment.reviewer else None,
@@ -120,6 +144,11 @@ def get_compliance_assessment(
         "assigned_reviewer_id": assessment.reviewer_id,
         "document_evidence": evidence,
         "reviews": [_assessment_review_out(review) for review in reviews],
+        "review_status_history": _review_status_history(
+            assessment.id,
+            db,
+            include_reason=current_user.role != UserRole.INSTITUTION_USER.value,
+        ),
     }
 
 
@@ -206,9 +235,92 @@ def assign_compliance_assessment(
         "rule_title": rule.title,
         "category": rule.category,
         "status": assessment.status,
+        "review_status": assessment.review_status,
         "explanation": assessment.explanation,
         "assessed_at": assessment.assessed_at,
         "reviewer_name": reviewer.full_name,
+    }
+
+
+@router.post("/{assessment_id}/review-status")
+def update_assessment_review_status(
+    assessment_id: int,
+    update: ComplianceAssessmentStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    assessment, _application, _rule = _assessment_for_user(assessment_id, db, current_user)
+    if current_user.role == UserRole.REVIEWER.value and assessment.reviewer_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Assessment not found")
+    if current_user.role not in {UserRole.ADMIN.value, UserRole.REVIEWER.value}:
+        raise HTTPException(status_code=403, detail="Not authorized to update review status")
+
+    current_status = assessment.review_status
+    requested_status = update.review_status
+    transitions = {
+        "PENDING_REVIEW": {"IN_REVIEW"},
+        "IN_REVIEW": {"ADDITIONAL_INFORMATION_REQUIRED", "ESCALATED", "CLOSED"},
+        "ADDITIONAL_INFORMATION_REQUIRED": {"IN_REVIEW", "ESCALATED", "CLOSED"},
+        "ESCALATED": {"IN_REVIEW", "CLOSED"},
+        "CLOSED": set(),
+    }
+    if requested_status == current_status:
+        return {
+            "assessment_id": assessment.id,
+            "review_status": current_status,
+            "changed": False,
+        }
+    if requested_status not in transitions.get(current_status, set()):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Review status cannot transition from {current_status} to {requested_status}",
+        )
+    reason = update.reason.strip() if update.reason else ""
+    if requested_status in {"ADDITIONAL_INFORMATION_REQUIRED", "ESCALATED", "CLOSED"} and not reason:
+        raise HTTPException(
+            status_code=422,
+            detail="A reason is required for this review status transition",
+        )
+
+    changed = db.query(ComplianceAssessment).filter(
+        ComplianceAssessment.id == assessment.id,
+        ComplianceAssessment.review_status == current_status,
+    ).update(
+        {ComplianceAssessment.review_status: requested_status},
+        synchronize_session=False,
+    )
+    if changed != 1:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Review status changed concurrently; reload before retrying",
+        )
+    db.add(ComplianceAssessmentStatusHistory(
+        assessment_id=assessment.id,
+        reviewer_id=current_user.id,
+        from_status=current_status,
+        to_status=requested_status,
+        reason=reason or None,
+    ))
+    db.add(AuditEvent(
+        user_id=current_user.id,
+        action="compliance_assessment.review_status_changed",
+        entity_type="compliance_assessment",
+        entity_id=str(assessment.id),
+        audit_metadata=json.dumps({
+            "from_status": current_status,
+            "to_status": requested_status,
+        }),
+    ))
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Could not save review status") from exc
+    return {
+        "assessment_id": assessment.id,
+        "review_status": requested_status,
+        "changed": True,
     }
 
 
@@ -217,6 +329,13 @@ def list_compliance_assessments(
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     application_id: int | None = Query(default=None, gt=0),
+    review_status: Literal[
+        "PENDING_REVIEW",
+        "IN_REVIEW",
+        "ADDITIONAL_INFORMATION_REQUIRED",
+        "ESCALATED",
+        "CLOSED",
+    ] | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -248,6 +367,8 @@ def list_compliance_assessments(
     if application_id is not None:
         # Preserve the same role/ownership filter before applying an application filter.
         query = query.filter(ComplianceAssessment.application_id == application_id)
+    if review_status is not None:
+        query = query.filter(ComplianceAssessment.review_status == review_status)
 
     total = query.count()
     rows = (
@@ -270,6 +391,7 @@ def list_compliance_assessments(
             "rule_title": rule.title,
             "category": rule.category,
             "status": assessment.status,
+            "review_status": assessment.review_status,
             "explanation": assessment.explanation,
             "assessed_at": assessment.assessed_at,
             "reviewer_name": reviewer.full_name if reviewer else None,

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 @dataclass
 class ComparisonResult:
     field: str
-    category: str  # MATCH, CONFIRMED_MISMATCH, POSSIBLE_MISMATCH, INSUFFICIENT_EVIDENCE, NOT_APPLICABLE
+    category: str  # MATCH, POSSIBLE_MISMATCH, INSUFFICIENT_EVIDENCE, NOT_APPLICABLE
     val1: Optional[str]
     val2: Optional[str]
     norm1: Optional[str]
@@ -99,20 +99,20 @@ class ConsistencyService:
                 human_review_recommended=False
             )
 
-        # Determine if it's a possible mismatch (OCR uncertainty) or confirmed
-        # If the original values are very similar but normalized differ, it might be OCR
-        # For simplicity in this demo, we treat all normalized mismatches as confirmed
-        # unless we have confidence scores (which the current extraction pipeline provides in some cases)
-
         return ComparisonResult(
             field=field_name,
-            category="CONFIRMED_MISMATCH",
+            category="POSSIBLE_MISMATCH",
             val1=v1,
             val2=v2,
             norm1=n1,
                 norm2=n2,
             doc1_id=doc1_id,
             doc2_id=doc2_id,
-            explanation=f"Extracted values for {field_name} conflict between documents.",
+            explanation=(
+                f"Extracted values for {field_name} differ between documents. "
+                "This is a discrepancy indicator only; a human reviewer must verify "
+                "the source documents. It does not establish which value is correct "
+                "or whether either underlying fact is false."
+            ),
             human_review_recommended=True
         )

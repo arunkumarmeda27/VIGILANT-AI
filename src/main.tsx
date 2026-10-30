@@ -5,6 +5,11 @@ import { AlertTriangle, ArrowRight, ClipboardCheck, Database, Eye, EyeOff, FileC
 import './styles.css';
 import './command.css';
 import { AssessmentReviewForm, validateAssessmentReviewNote, type AssessmentReviewOutcome } from './components/AssessmentReviewForm';
+import { ValidationRunHistory, type ValidationRunRecord } from './components/ValidationRunHistory';
+import { DocumentRegistryAdmin } from './components/DocumentRegistryAdmin';
+import { DocumentTypeCorrection } from './components/DocumentTypeCorrection';
+import { ImageEvidencePanel } from './components/ImageEvidencePanel';
+import { ReviewStatusControl, type ReviewStatus } from './components/ReviewStatusControl';
 
 // --- Types ---
 type DS = 'Not Submitted' | 'Received' | 'Validation Pending' | 'Verified' | 'Mismatch Detected' | 'Source Unavailable' | 'Manual Review Required';
@@ -57,6 +62,14 @@ type AuditEventItem = {
   metadata: Record<string, string | number | boolean | string[] | null>;
 };
 type AuditEventPage = { items: AuditEventItem[]; limit: number; offset: number; total: number };
+type ApplicationValidationResult = {
+  run_id: number;
+  execution_status: 'completed' | 'partial' | 'failed';
+  status: 'completed' | 'partial' | 'inconclusive';
+  evaluated_rules_count: number;
+  not_evaluated_rules_count: number;
+};
+type ValidationRunHistoryPage = { items: ValidationRunRecord[] };
 type ComplianceAssessment = {
   id: number;
   application_id: number;
@@ -67,6 +80,7 @@ type ComplianceAssessment = {
   rule_title: string;
   category: string;
   status: string;
+  review_status: ReviewStatus;
   explanation: string;
   assessed_at: string;
   reviewer_name: string | null;
@@ -94,6 +108,13 @@ type ComplianceAssessmentDetail = ComplianceAssessment & {
     fields: Record<string, ExtractedField>;
   }[];
   reviews: AssessmentReview[];
+  review_status_history: {
+    reviewer_id: number;
+    from_status: ReviewStatus;
+    to_status: ReviewStatus;
+    reason: string | null;
+    created_at: string;
+  }[];
 };
 type AssessmentReviewer = { id: number; full_name: string; email: string };
 type ComplianceAssessmentPage = { items: ComplianceAssessment[]; total: number };
@@ -144,37 +165,96 @@ type PersistedDocument = {
   doc_type: string;
   original_filename: string;
   processing_status: string;
+  predicted_doc_type?: string | null;
+  processed_doc_type?: string | null;
+  schema_version_id?: number | null;
   sha256: string | null;
   file_size: number | null;
   created_at: string;
 };
 type ExtractedField = {
   value: string | null;
+  raw_value?: string | null;
+  normalized_value?: unknown;
   page: number | null;
   evidence: string | null;
   confidence: number | null;
   status: string;
+  method?: string | null;
+  extractor_version?: string | null;
+  coordinates?: Record<string, number> | null;
+  verification_status: 'unverified';
 };
 type DocumentProcessingResult = {
   document_id: number;
   processing_status: string;
   extraction_method: string;
   pages_processed: number;
+  pages?: {
+    page: number;
+    text: string;
+    method: string;
+    confidence: number | null;
+    regions: { text: string; coordinates: Record<string, number>; coordinate_space: string; confidence: number | null }[];
+  }[];
+  ocr?: { engine: string | null; engine_version: string | null; languages: string[]; available: boolean };
+  processing_duration_ms?: number;
+  unreadable_pages?: number[];
+  blank_pages?: number[];
   fields: Record<string, ExtractedField>;
   classification: {
     status: 'classified' | 'needs_review' | 'unavailable';
     candidate_document_type: string | null;
+    candidate_alternatives?: string[];
+    heuristic_score?: number | null;
+    score_kind?: string;
+    registry_status?: string | null;
+    schema_version_id?: number | null;
     match_strength: 'strong' | 'possible' | 'none';
+    classifier?: string | null;
+    classifier_version?: string | null;
+    abstention_reason?: string | null;
+    human_review_required?: boolean;
     evidence: { page: number; signal: string; excerpt: string; document_type?: string | null }[];
     explanation: string;
   } | null;
+  schema_validation?: {
+    status: string;
+    document_type_id?: string;
+    schema_version_id?: number;
+    schema_version?: string;
+    registry_status?: string;
+    reason?: string;
+    fields: {
+      field_id: string;
+      label: string;
+      status: string;
+      required: boolean;
+      value: unknown;
+      raw_value?: unknown;
+      normalized_value?: unknown;
+      normalization_method?: string;
+      source?: ExtractedField | null;
+    }[];
+    human_review_required: boolean;
+    disclaimer: string;
+  } | null;
   warnings: string[];
   processed_at: string | null;
+};
+type PersistedDocumentType = {
+  id: string;
+  display_name: string;
+  category: string;
+  status: string;
+  supported_file_formats: string[];
+  application_categories: string[];
 };
 type DocumentIntegrityPreview = {
   application_id: number;
   document_id: number;
   sha256: string | null;
+  file_hash_check: { status: 'match' | 'mismatch' | 'unavailable' | 'not_available'; stored_sha256: string | null; current_sha256: string | null; explanation: string };
   duplicate_file_check: { status: string; explanation: string; matches: { document_id: number; original_filename: string }[] };
   pdf_structure_check: { status: string; explanation: string; matches: { document_id: number; original_filename: string }[] };
   metadata_check: { status: string; explanation: string; matches: { document_id: number; original_filename: string }[] };
@@ -923,6 +1003,7 @@ function PersistedApplicationDetail() {
   const [application, setApplication] = useState<PersistedApplication | null>(null);
   const [documents, setDocuments] = useState<PersistedDocument[]>([]);
   const [consistencyRuns, setConsistencyRuns] = useState<ConsistencyRunRecord[]>([]);
+  const [validationRuns, setValidationRuns] = useState<ValidationRunRecord[]>([]);
   const [assessments, setAssessments] = useState<ComplianceAssessment[]>([]);
   const [findings, setFindings] = useState<PersistedFinding[]>([]);
   const [checklist, setChecklist] = useState<ApplicationChecklist | null>(null);
@@ -951,15 +1032,17 @@ function PersistedApplicationDetail() {
       requestApi<PersistedApplication>(`/api/applications/${id}`, token),
       requestApi<PersistedDocument[]>(`/api/applications/${id}/documents`, token),
       requestApi<ConsistencyRunHistory>(`/api/applications/${id}/consistency-runs`, token),
+      requestApi<ValidationRunHistoryPage>(`/api/applications/${id}/validation-runs`, token),
       requestApi<PersistedFinding[]>(`/api/applications/${id}/findings`, token),
       requestApi<ComplianceAssessmentPage>(`/api/compliance-assessments/?application_id=${id}&limit=200`, token),
-    ]).then(([app, docs, history, persistedFindings, assessmentPage]) => {
+    ]).then(([app, docs, history, validationHistory, persistedFindings, assessmentPage]) => {
       if (cancelled) return;
       setApplication(app);
       setEntityName(app.entity_name);
       setAppType(app.app_type);
       setDocuments(docs);
       setConsistencyRuns(history.items);
+      setValidationRuns(validationHistory.items);
       setFindings(persistedFindings);
       setAssessments(assessmentPage.items.filter(item => item.application_id === app.id));
     }).catch(reason => {
@@ -1002,11 +1085,19 @@ function PersistedApplicationDetail() {
     setWorkflowError(null);
     setWorkflowNotice(null);
     try {
-      await requestApi(`/api/applications/${application.id}/validate-all`, token, { method: 'POST' });
+      const validationResult = await requestApi<ApplicationValidationResult>(
+        `/api/applications/${application.id}/validate-all`,
+        token,
+        { method: 'POST' },
+      );
       const assessmentPage = await requestApi<ComplianceAssessmentPage>(`/api/compliance-assessments/?application_id=${application.id}&limit=200`, token);
       setAssessments(assessmentPage.items.filter(item => item.application_id === application.id));
       setFindings(await requestApi<PersistedFinding[]>(`/api/applications/${application.id}/findings`, token));
-      setWorkflowNotice('Registry assessments saved and loaded from the backend. Review their source and scope status below.');
+      const history = await requestApi<ValidationRunHistoryPage>(`/api/applications/${application.id}/validation-runs`, token);
+      setValidationRuns(history.items);
+      setWorkflowNotice(
+        `Validation run ${validationResult.run_id} persisted (${validationResult.execution_status} execution, ${validationResult.status} outcome): ${validationResult.evaluated_rules_count} rule(s) evaluated and ${validationResult.not_evaluated_rules_count} not evaluated. This is not a determination of document authenticity or regulatory compliance.`,
+      );
     } catch (reason) {
       if (reason instanceof ApiRequestError && reason.status === 401) {
         logout();
@@ -1112,8 +1203,8 @@ function PersistedApplicationDetail() {
             {workflowError && <div className="validation-error" role="alert"><AlertTriangle size={18} aria-hidden="true" />{workflowError}</div>}
             {workflowNotice && <p className="validation-meta" role="status">{workflowNotice}</p>}
             <div className="live-page-actions">
-              <button className="button secondary" type="button" onClick={runRegulatoryValidation} disabled={validatingRules || !documents.some(document => document.processing_status === 'completed')}>
-                {validatingRules ? <Loader2 size={17} className="spin" aria-hidden="true" /> : null}{validatingRules ? 'Validating…' : 'Run regulatory validation'}
+              <button className="button secondary" type="button" onClick={runRegulatoryValidation} disabled={validatingRules}>
+                {validatingRules ? <Loader2 size={17} className="spin" aria-hidden="true" /> : null}{validatingRules ? 'Validating…' : 'Run central validation'}
               </button>
               <button className="button secondary" type="button" onClick={runChecklistValidation} disabled={validatingChecklist}>
                 {validatingChecklist ? <Loader2 size={17} className="spin" aria-hidden="true" /> : null}{validatingChecklist ? 'Checking…' : 'Run document checklist'}
@@ -1123,6 +1214,7 @@ function PersistedApplicationDetail() {
               </button>
               <Link className="button secondary" to={`/verification?application_id=${application.id}`}>Manage and process documents</Link>
             </div>
+            <p className="validation-meta">Central validation processes pending documents and reuses current completed extraction results. Failed or partial documents require an explicit retry from the document workspace; unavailable OCR remains inconclusive.</p>
             {documents.filter(document => document.processing_status === 'completed').length < 2 && <p className="validation-meta">Cross-document comparison requires at least two successfully processed documents. It compares extracted fields; it does not verify document authenticity.</p>}
             <p className="validation-disclaimer">Regulatory statuses reflect the configured registry and extracted evidence only. Candidate rules may be synthetic, unapproved, or not confirmed current; results are not official legal or compliance determinations.</p>
           </section>
@@ -1132,6 +1224,10 @@ function PersistedApplicationDetail() {
               <strong>{item.document_type.replaceAll('_', ' ')} · {item.status.replaceAll('_', ' ')}</strong>
               <p>{item.explanation}</p><small>Document IDs: {item.document_ids.length ? item.document_ids.join(', ') : 'None'}{item.missing_fields.length ? ` · Missing extracted fields: ${item.missing_fields.join(', ')}` : ''}</small>
             </article>)}</div> : <p className="validation-meta">Run the checklist to inspect configured document types, processing state, and extracted-field presence.</p>}
+          </section>
+          <section className="content-section">
+            <Heading title="Central validation run history" text="Persisted orchestration runs with execution status, stage outcomes, rule results, and available source provenance." />
+            <ValidationRunHistory runs={validationRuns} />
           </section>
           <section className="content-section">
             <Heading title="Persisted regulatory assessments" text="Assessment records returned by the authorized API for this application." />
@@ -1170,10 +1266,13 @@ function PersistedApplicationDetail() {
                 <p className="validation-meta">{new Date(run.created_at).toLocaleString()}</p>
                 {run.results.length ? run.results.map(result => (
                   <div className="validation-check" key={result.id}>
-                    <strong>{result.field.replaceAll('_', ' ')} · {result.category}</strong>
+                    <strong>{result.field.replaceAll('_', ' ')} · {result.category === 'CONFIRMED_MISMATCH'
+                      ? 'POSSIBLE_MISMATCH (legacy stored status: CONFIRMED_MISMATCH)'
+                      : result.category}</strong>
                     <p>{result.doc1_filename} (ID {result.doc1_id}): {result.val1 ?? 'No extracted value'}</p>
                     <p>{result.doc2_filename} (ID {result.doc2_id}): {result.val2 ?? 'No extracted value'}</p>
                     <p>{result.explanation}</p>
+                    <p>Extracted differences are indicators only; a human reviewer must verify the source documents. They do not establish which value is correct or whether either underlying fact is false.</p>
                     {result.human_review_recommended && <p><b>Human review recommended.</b></p>}
                   </div>
                 )) : <p className="validation-meta">No comparable extracted fields were returned in this run.</p>}
@@ -1465,6 +1564,7 @@ function AssessmentWorkspace({ title }: { title: string }) {
   const { token, logout } = useAuth();
   const [page, setPage] = useState<ComplianceAssessmentPage | null>(null);
   const [offset, setOffset] = useState(0);
+  const [reviewStatus, setReviewStatus] = useState<ReviewStatus | ''>('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const pageSize = 50;
@@ -1475,7 +1575,11 @@ function AssessmentWorkspace({ title }: { title: string }) {
       setLoading(false);
       return () => { cancelled = true; };
     }
-    requestApi<ComplianceAssessmentPage>(`/api/compliance-assessments/?limit=${pageSize}&offset=${offset}`, token)
+    const statusFilter = reviewStatus ? `&review_status=${reviewStatus}` : '';
+    requestApi<ComplianceAssessmentPage>(
+      `/api/compliance-assessments/?limit=${pageSize}&offset=${offset}${statusFilter}`,
+      token,
+    )
       .then(result => { if (!cancelled) setPage(result); })
       .catch(reason => {
         if (cancelled) return;
@@ -1488,18 +1592,36 @@ function AssessmentWorkspace({ title }: { title: string }) {
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [token, logout, offset]);
+  }, [token, logout, offset, reviewStatus]);
   return (
     <Shell title={title} liveData>
       <section className="content-section">
         <Heading title={title} text="Persisted assessment snapshots are shown newest first. Changed results remain as history; repeated identical validation results do not create duplicate snapshots. Candidate registry rules are not treated as assessments." />
         {error && <div className="validation-error" role="alert"><AlertTriangle size={18} aria-hidden="true" />{error}</div>}
+        <label htmlFor="review-queue-status">Filter by review task status
+          <select
+            id="review-queue-status"
+            value={reviewStatus}
+            disabled={loading}
+            onChange={event => {
+              setOffset(0);
+              setReviewStatus(event.target.value as ReviewStatus | '');
+            }}
+          >
+            <option value="">All review statuses</option>
+            <option value="PENDING_REVIEW">Pending review</option>
+            <option value="IN_REVIEW">In review</option>
+            <option value="ADDITIONAL_INFORMATION_REQUIRED">Additional information required</option>
+            <option value="ESCALATED">Escalated</option>
+            <option value="CLOSED">Closed</option>
+          </select>
+        </label>
         {loading ? <p role="status">Loading authorized assessments…</p> : page?.items.length ? (
           <>
-            <div className="table-wrap" role="region" aria-label={`${title} table; scroll horizontally for more columns`} tabIndex={0}><table><thead><tr><th>Application</th><th>Institution</th><th>Rule</th><th>Category</th><th>Recorded status</th><th>Reviewer</th><th>Human decisions</th><th>Assessed</th><th>Explanation</th><th>Review</th></tr></thead>
+            <div className="table-wrap" role="region" aria-label={`${title} table; scroll horizontally for more columns`} tabIndex={0}><table><thead><tr><th>Application</th><th>Institution</th><th>Rule</th><th>Category</th><th>Automated result</th><th>Review task</th><th>Reviewer</th><th>Human decisions</th><th>Assessed</th><th>Explanation</th><th>Review</th></tr></thead>
               <tbody>{page.items.map(item => <tr key={item.id}>
                 <td><Link className="table-link" to={`/applications/${item.application_id}`}>{item.application_reference}</Link></td>
-                <td>{item.entity_name}</td><td>{item.rule_code} · {item.rule_title}</td><td>{item.category}</td><td><Tag>{item.status}</Tag></td><td>{item.reviewer_name || 'Unassigned'}</td>
+                <td>{item.entity_name}</td><td>{item.rule_code} · {item.rule_title}</td><td>{item.category}</td><td><Tag>{item.status}</Tag></td><td><Tag>{item.review_status.replaceAll('_', ' ')}</Tag></td><td>{item.reviewer_name || 'Unassigned'}</td>
                 <td>{item.reviews.length ? `${item.reviews.length} decision(s) · latest: ${item.reviews[item.reviews.length - 1].outcome.replaceAll('_', ' ')}` : 'No decision recorded'}</td>
                 <td>{new Date(item.assessed_at).toLocaleString()}</td><td>{item.explanation}</td>
                 <td><Link className="button secondary" to={`/compliance-assessments/${item.id}`}>Open review</Link></td>
@@ -1602,6 +1724,28 @@ function AssessmentReviewPage() {
     } finally { savingRef.current = false; setSaving(false); }
   };
 
+  const updateReviewStatus = async (reviewStatus: ReviewStatus, reason: string): Promise<boolean> => {
+    if (!token || savingRef.current) return false;
+    savingRef.current = true;
+    setSaving(true); setError(null); setNotice(null);
+    try {
+      await requestApi(`/api/compliance-assessments/${id}/review-status`, token, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ review_status: reviewStatus, reason }),
+      });
+      await reload();
+      setNotice('Review task status saved. The automated result and application status are unchanged.');
+      return true;
+    } catch (reason) {
+      setError(reason instanceof ApiRequestError ? reason.message : 'Could not update review task status.');
+      return false;
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
+
   if (loading) return <Shell title="Assessment review" liveData><p role="status">Loading persisted review details…</p></Shell>;
   return (
     <Shell title="Assessment review" liveData>
@@ -1617,6 +1761,7 @@ function AssessmentReviewPage() {
             <div><dt>Category</dt><dd>{assessment.category}</dd></div>
             <div><dt>Application status</dt><dd>{assessment.application_status}</dd></div>
             <div><dt>Automated assessment</dt><dd>{assessment.status} · {new Date(assessment.assessed_at).toLocaleString()}</dd></div>
+            <div><dt>Review task status</dt><dd>{assessment.review_status.replaceAll('_', ' ')}</dd></div>
             <div><dt>Assigned reviewer</dt><dd>{assessment.reviewer_name || 'Unassigned'}</dd></div>
           </dl>
           <h3>Recorded explanation</h3><p>{assessment.explanation}</p>
@@ -1634,6 +1779,30 @@ function AssessmentReviewPage() {
           <Heading title="Record human decision" text="This decision is stored as an append-only reviewer record. It does not change the automated assessment or application status." />
           <AssessmentReviewForm outcome={outcome} note={note} saving={saving} onOutcomeChange={setOutcome} onNoteChange={setNote} onSubmit={saveReview} />
         </section>}
+        {(user?.role === 'ADMIN' || (user?.role === 'REVIEWER' && assessment.assigned_reviewer_id === user.id)) && (
+          <section className="content-section">
+            <Heading title="Review task lifecycle" text="Task transitions are separate from automated outcomes and application approval. Escalations, information requests, and closure require a reason." />
+            <ReviewStatusControl
+              currentStatus={assessment.review_status}
+              saving={saving}
+              onTransition={updateReviewStatus}
+            />
+          </section>
+        )}
+        <section className="content-section">
+          <Heading title="Review status history" text="Historical transitions are append-only; explanatory reasons are restricted to administrators and assigned reviewers." />
+          {assessment.review_status_history.length ? (
+            <ol>
+              {assessment.review_status_history.map((item, index) => (
+                <li key={`${item.created_at}-${index}`}>
+                  {item.from_status.replaceAll('_', ' ')} → {item.to_status.replaceAll('_', ' ')}
+                  {' · '}{new Date(item.created_at).toLocaleString()}
+                  {item.reason ? ` · ${item.reason}` : ''}
+                </li>
+              ))}
+            </ol>
+          ) : <p>No review task status changes have been recorded.</p>}
+        </section>
         {user?.role === 'REVIEWER' && assessment.assigned_reviewer_id !== user.id && <section className="content-section"><Heading title="Human decision" text="Decisions can be recorded only by the reviewer assigned to this assessment." /><p>This assessment is not assigned to your reviewer account. Ask an administrator to assign it before recording a decision.</p></section>}
         <section className="content-section">
           <Heading title="Linked document evidence" text="Extracted values remain unverified and are shown with source excerpts and page references when recorded." />
@@ -1721,13 +1890,32 @@ function GlobalVerification() {
   const [validatingId, setValidatingId] = useState<number | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadResetKey, setUploadResetKey] = useState(0);
-  const [documentType, setDocumentType] = useState('fire_safety_certificate');
+  const [documentType, setDocumentType] = useState('supporting_document');
+  const [registryTypes, setRegistryTypes] = useState<PersistedDocumentType[]>([]);
+  const [registryError, setRegistryError] = useState<string | null>(null);
   const [processingResults, setProcessingResults] = useState<Record<number, DocumentProcessingResult>>({});
   const [integrityResults, setIntegrityResults] = useState<Record<number, DocumentIntegrityPreview>>({});
   const [integrityLoadingId, setIntegrityLoadingId] = useState<number | null>(null);
   const [validation, setValidation] = useState<{ documentId: number; preview: DocumentValidationPreview } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRegistryError(null);
+    if (!token) {
+      setRegistryTypes([]);
+      return () => { cancelled = true; };
+    }
+    requestApi<PersistedDocumentType[]>('/api/document-types/', token)
+      .then(items => { if (!cancelled) setRegistryTypes(items.filter(item => item.status === 'active')); })
+      .catch(reason => {
+        if (!cancelled) {
+          setRegistryError(reason instanceof ApiRequestError ? reason.message : 'Active document registry is unavailable.');
+        }
+      });
+    return () => { cancelled = true; };
+  }, [token]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1929,7 +2117,7 @@ function GlobalVerification() {
             <select
               aria-label="Select persisted application"
               value={selectedApplicationId}
-              onChange={event => { setSelectedApplicationId(event.target.value); setSelectedFile(null); setNotice(null); }}
+              onChange={event => { setSelectedApplicationId(event.target.value); setSelectedFile(null); setDocumentType('supporting_document'); setNotice(null); }}
             >
               {applications.map(application => (
                 <option key={application.id} value={application.id}>
@@ -1956,10 +2144,8 @@ function GlobalVerification() {
               <label>
                 Document type
                 <select value={documentType} onChange={event => setDocumentType(event.target.value)}>
-                  <option value="fire_safety_certificate">Fire safety certificate</option>
-                  <option value="faculty_qualification_certificate">Faculty qualification certificate</option>
-                  <option value="accreditation_certificate">Accreditation certificate</option>
-                  <option value="supporting_document">Other supporting document</option>
+                  <option value="supporting_document">Other / unregistered document type</option>
+                  {registryTypes.filter(type => !type.application_categories.length || type.application_categories.some(category => category.toLocaleLowerCase() === selectedApplication?.app_type.toLocaleLowerCase())).map(type => <option key={type.id} value={type.id}>{type.display_name}</option>)}
                 </select>
               </label>
               <label>
@@ -1971,6 +2157,8 @@ function GlobalVerification() {
                 {uploading ? 'Uploading…' : 'Upload PDF'}
               </button>
             </form>
+            {registryError && <p className="validation-meta" role="status">Active document registry unavailable: {registryError}. Unregistered uploads remain possible but schema validation will be explicitly unavailable.</p>}
+            {!registryError && registryTypes.length === 0 && <p className="validation-meta">No active document schemas are available. Registry draft types are intentionally not offered for processing.</p>}
           </section>
 
           <section className="content-section">
@@ -1979,7 +2167,9 @@ function GlobalVerification() {
               <p className="validation-meta">No persisted documents are attached to this application yet.</p>
             ) : (
               <div className="live-document-list">
-                {documents.map(document => (
+                {documents.map(document => {
+                  const processingResult = processingResults[document.id];
+                  return (
                   <article className="live-document-card" key={document.id}>
                     <div className="live-document-heading">
                       <div>
@@ -1990,6 +2180,9 @@ function GlobalVerification() {
                     </div>
                     <dl className="validation-rule-meta">
                       <div><dt>Document type</dt><dd>{document.doc_type}</dd></div>
+                      <div><dt>Classifier prediction</dt><dd>{document.predicted_doc_type || 'Not available; prediction is a suggestion only'}</dd></div>
+                      <div><dt>Processed as</dt><dd>{document.processed_doc_type || 'Not processed against a registry schema'}</dd></div>
+                      {document.schema_version_id !== null && document.schema_version_id !== undefined && <div><dt>Pinned schema version ID</dt><dd>{document.schema_version_id}</dd></div>}
                       <div><dt>Uploaded</dt><dd>{new Date(document.created_at).toLocaleString()}</dd></div>
                       {document.file_size !== null && <div><dt>File size</dt><dd>{document.file_size.toLocaleString()} bytes</dd></div>}
                     </dl>
@@ -2004,6 +2197,12 @@ function GlobalVerification() {
                           {processingId === document.id ? 'Processing…' : 'Process document'}
                         </button>
                       )}
+                      {document.processing_status === 'completed' && (
+                        <button className="button secondary" type="button" disabled={processingId !== null} onClick={() => handleProcess(document)}>
+                          {processingId === document.id ? <Loader2 size={17} className="spin" aria-hidden="true" /> : <FileText size={17} aria-hidden="true" />}
+                          {processingId === document.id ? 'Refreshing…' : 'Refresh extracted fields'}
+                        </button>
+                      )}
                       <button className="button primary" type="button" disabled={document.processing_status !== 'completed' || validatingId !== null} onClick={() => handleValidate(document)}>
                         {validatingId === document.id ? <Loader2 size={17} className="spin" aria-hidden="true" /> : <FileCheck2 size={17} aria-hidden="true" />}
                         {validatingId === document.id ? 'Loading preview…' : 'Validate document'}
@@ -2012,6 +2211,7 @@ function GlobalVerification() {
                     {integrityResults[document.id] && (
                       <section className="integrity-preview">
                         <h4>Integrity assistance · authenticity not assessed</h4>
+                        <p><b>Stored-file hash integrity ({integrityResults[document.id].file_hash_check.status}):</b> {integrityResults[document.id].file_hash_check.explanation}</p>
                         <p><b>Duplicate-file hash check ({integrityResults[document.id].duplicate_file_check.status}):</b> {integrityResults[document.id].duplicate_file_check.explanation}</p>
                         {integrityResults[document.id].duplicate_file_check.matches.map(match => <p key={match.document_id}>Matching document ID {match.document_id}: {match.original_filename}</p>)}
                         <p><b>PDF structure ({integrityResults[document.id].pdf_structure_check.status}):</b> {integrityResults[document.id].pdf_structure_check.explanation}</p>
@@ -2023,16 +2223,55 @@ function GlobalVerification() {
                     {document.processing_status === 'ocr_unavailable' && (
                       <p className="validation-meta">Processing did not complete successfully for validation; the preview requires completed extraction.</p>
                     )}
-                    {processingResults[document.id] && (
+                    {processingResult && (
                       <section className="validation-subsection">
-                        <h4>Latest extraction response · {processingResults[document.id].extraction_method}</h4>
-                        <p className="validation-meta">Extraction is unverified. Pages processed: {processingResults[document.id].pages_processed}.</p>
-                        {processingResults[document.id].classification && (
+                        <h4>Latest extraction response · {processingResult.extraction_method}</h4>
+                        <p className="validation-meta">
+                          Processing: {processingResult.processing_status} · pages: {processingResult.pages_processed} · duration: {processingResult.processing_duration_ms ?? 'Unavailable'} ms · extraction is unverified.
+                        </p>
+                        <p className="validation-meta">
+                          OCR engine: {processingResult.ocr?.engine
+                            ? `${processingResult.ocr.engine} ${processingResult.ocr.engine_version || 'version unavailable'}`
+                            : 'Unavailable or not needed'}
+                          {processingResult.ocr?.languages?.length
+                            ? ` · languages: ${processingResult.ocr.languages.join(', ')}`
+                            : ''}
+                        </p>
+                        {processingResult.unreadable_pages?.length ? (
+                          <p className="form-error">Unreadable pages requiring review: {processingResult.unreadable_pages.join(', ')}</p>
+                        ) : null}
+                        {processingResult.blank_pages?.length ? (
+                          <p className="validation-meta">Uniformly blank pages detected; OCR skipped: {processingResult.blank_pages.join(', ')}</p>
+                        ) : null}
+                        {processingResult.warnings.map((warning, index) => (
+                          <p className="validation-meta" key={`${warning}-${index}`}>Warning: {warning}</p>
+                        ))}
+                        {processingResult.classification && (
                           <section className="validation-subsection">
-                            <h5>Content-based type suggestion · {processingResults[document.id].classification?.status.replaceAll('_', ' ')}</h5>
-                            <p>{processingResults[document.id].classification?.explanation}</p>
-                            <p><b>Suggested type:</b> {processingResults[document.id].classification?.candidate_document_type ?? 'Unclassified; assign manually'}</p>
-                            {processingResults[document.id].classification?.evidence.map((evidence, index) => (
+                            <h5>Content-based type suggestion · {processingResult.classification.status.replaceAll('_', ' ')}</h5>
+                            <p>{processingResult.classification.explanation}</p>
+                            <p><b>Suggested type:</b> {processingResult.classification.candidate_document_type ?? 'Unclassified; assign manually'}</p>
+                            <p>
+                              <b>Heuristic score:</b> {processingResult.classification.heuristic_score ?? 'Unavailable'}
+                              {processingResult.classification.score_kind
+                                ? ` (${processingResult.classification.score_kind}; not a probability)`
+                                : ''}
+                              {processingResult.classification.registry_status
+                                ? ` · Registry status: ${processingResult.classification.registry_status}`
+                                : ''}
+                              {processingResult.classification.schema_version_id
+                                ? ` · Candidate schema version ID: ${processingResult.classification.schema_version_id}`
+                                : ''}
+                            </p>
+                            <small>
+                              Classifier: {processingResult.classification.classifier || 'Unavailable'}
+                              {' '}{processingResult.classification.classifier_version || ''}
+                              {processingResult.classification.abstention_reason
+                                ? ` · Abstained: ${processingResult.classification.abstention_reason}`
+                                : ''}
+                              {' · Human review required'}
+                            </small>
+                            {processingResult.classification.evidence.map((evidence, index) => (
                               <p key={`${evidence.page}-${evidence.signal}-${index}`}>
                                 {evidence.document_type ? `${evidence.document_type} · ` : ''}Page {evidence.page} · matched “{evidence.signal}” · {evidence.excerpt}
                               </p>
@@ -2040,18 +2279,82 @@ function GlobalVerification() {
                             <small>Classification is a configurable text-match suggestion. It does not verify document authenticity or change the submitted document type.</small>
                           </section>
                         )}
-                        {Object.entries(processingResults[document.id].fields).map(([name, field]) => (
-                          <p key={name}><b>{name.replaceAll('_', ' ')}:</b> {field.value ?? 'Not extracted'}{field.evidence ? ` · Evidence: ${field.evidence}` : ''}{field.page !== null ? ` · Page ${field.page}` : ''}</p>
+                        {processingResult.pages?.map(page => (
+                          <details className="validation-subsection" key={page.page}>
+                            <summary>
+                              Page {page.page} · {page.method}
+                              {page.confidence !== null ? ` · engine confidence ${page.confidence}` : ' · confidence unavailable'}
+                              {' · '}{page.regions.length} text region(s)
+                            </summary>
+                            <pre className="validation-evidence-text">{page.text || 'No text extracted from this page.'}</pre>
+                            {page.regions.map((region, index) => (
+                              <p key={`${page.page}-${index}`}>
+                                {region.coordinate_space} · {region.text}
+                                {' · Coordinates: '}
+                                {Object.entries(region.coordinates).map(([key, value]) => `${key}=${value}`).join(', ')}
+                              </p>
+                            ))}
+                          </details>
                         ))}
-                        {processingResults[document.id].warnings.map((warning, index) => <p key={index}>{warning}</p>)}
+                        {processingResult.schema_validation && (
+                          <section className="validation-subsection" aria-label="Document schema validation">
+                            <h5>Registry schema validation · {processingResult.schema_validation.status.replaceAll('_', ' ')}</h5>
+                            <p><b>Registry document type:</b> {processingResult.schema_validation.document_type_id || 'Unavailable'} · <b>Schema:</b> {processingResult.schema_validation.schema_version || 'Unavailable'} (version ID {processingResult.schema_validation.schema_version_id ?? 'Unavailable'})</p>
+                            <p>{processingResult.schema_validation.reason || 'The persisted values were checked against this schema version.'}</p>
+                            {processingResult.schema_validation.fields.map(field => (
+                              <p key={field.field_id}>
+                                <b>{field.label} · {field.status.replaceAll('_', ' ')}:</b> {field.raw_value === null || field.raw_value === undefined ? 'Missing' : String(field.raw_value)}
+                                {field.normalized_value !== null && field.normalized_value !== undefined
+                                  ? ` · Normalized: ${String(field.normalized_value)}${field.normalization_method ? ` (${field.normalization_method})` : ''}`
+                                  : ''}
+                                {field.source?.page ? ` · Uploaded-document page ${field.source.page}` : ' · Uploaded-document page unavailable'}
+                                {field.source?.evidence ? ` · Source excerpt: ${field.source.evidence}` : ' · Source excerpt unavailable'}
+                              </p>
+                            ))}
+                            <small>{processingResult.schema_validation.disclaimer} Human review required: {processingResult.schema_validation.human_review_required ? 'yes' : 'no'}.</small>
+                          </section>
+                        )}
+                        {Object.entries(processingResult.fields).map(([name, field]) => (
+                          <p key={name}>                          <b>{name.replaceAll('_', ' ')}:</b> {field.raw_value ?? field.value ?? 'Not extracted'}
+                          {field.normalized_value !== null && field.normalized_value !== undefined
+                            && field.normalized_value !== field.raw_value
+                            ? ` · Normalized: ${String(field.normalized_value)}`
+                            : ''}
+                          {field.evidence ? ` · Evidence: ${field.evidence}` : ''}
+                          {field.page !== null ? ` · Page ${field.page}` : ''}
+                          {field.confidence !== null ? ` · Confidence: ${field.confidence}` : ' · Confidence unavailable'}
+                          {field.method ? ` · Method: ${field.method}` : ''}
+                          {field.extractor_version ? ` · Extractor: ${field.extractor_version}` : ''}</p>
+                        ))}
+                        {processingResult.warnings.map((warning, index) => <p key={index}>{warning}</p>)}
                       </section>
+                    )}
+                    {(user?.role === 'ADMIN' || user?.role === 'REVIEWER') && token && (
+                      <DocumentTypeCorrection
+                        applicationId={document.application_id}
+                        documentId={document.id}
+                        currentType={document.doc_type}
+                        predictedType={document.predicted_doc_type || processingResult?.classification?.candidate_document_type || null}
+                        types={registryTypes}
+                        token={token}
+                        onCorrected={() => {
+                          void refreshDocuments(document.application_id);
+                          setProcessingResults(current => {
+                            const next = { ...current };
+                            delete next[document.id];
+                            return next;
+                          });
+                        }}
+                      />
                     )}
                     {validation?.documentId === document.id && <DocumentValidationResult preview={validation.preview} />}
                   </article>
-                ))}
+                  );
+                })}
               </div>
             )}
           </section>
+          {token && <ImageEvidencePanel applicationId={selectedApplication.id} token={token} />}
         </>
       )}
       <p className="validation-disclaimer">
@@ -2391,6 +2694,7 @@ function Admin() {
       <div className="live-page-actions"><Link className="button secondary" to="/review-queue">Manage assessment assignments</Link><Link className="button secondary" to="/audit-trail">Review audit history</Link></div>
       <p className="validation-disclaimer">The health endpoint reports API process availability only. Database readiness and registry currentness are not exposed here. This prototype has no rule-configuration interface or password-recovery workflow.</p>
     </section>
+    {token && <DocumentRegistryAdmin token={token} />}
   </Shell>;
 }
 

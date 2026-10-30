@@ -253,67 +253,80 @@ def evaluate_rule_result(
     document_evidence: Mapping[str, Any],
 ) -> dict[str, Any]:
     """
-    Perform deterministic rule evaluation against extracted evidence.
-    Returns a result with status, explanation, and evidence.
+    Perform limited field checks without treating extraction as compliance evidence.
     """
     rule_id = rule["rule_id"]
     fields = document_evidence.get("fields", {})
 
     if rule_id == "FS-001":
         cert_no = fields.get("certificate_number", {})
-        if cert_no.get("status") == "extracted":
+        if cert_no.get("status") == "extracted" and cert_no.get("value"):
             return {
-                "status": "Pass",
-                "explanation": f"Valid certificate number {cert_no['value']} was extracted.",
+                "status": "Needs review",
+                "explanation": (
+                    "A certificate number was extracted, but its authenticity and "
+                    "regulatory validity were not verified."
+                ),
                 "evidence": cert_no.get("evidence"),
                 "rule_id": rule_id,
             }
         return {
-            "status": "Fail",
-            "explanation": "No valid certificate number could be extracted from the document.",
+            "status": "Not evaluated",
+            "explanation": (
+                "A certificate number was not extracted; there is insufficient "
+                "evidence to assess this candidate check."
+            ),
             "evidence": None,
             "rule_id": rule_id,
         }
 
     if rule_id == "FS-002":
         expiry = fields.get("expiry_date", {})
-        if expiry.get("status") == "missing":
+        if expiry.get("status") != "extracted" or not expiry.get("value"):
             return {
-                "status": "Needs review",
-                "explanation": "Expiry date is missing from the document; cannot determine validity.",
+                "status": "Not evaluated",
+                "explanation": (
+                    "An expiry date was not extracted; there is insufficient "
+                    "evidence to assess this candidate check."
+                ),
                 "evidence": None,
                 "rule_id": rule_id,
             }
 
-        if expiry.get("status") == "extracted":
-            try:
-                expiry_date = datetime.fromisoformat(expiry["value"].replace("Z", "+00:00"))
-                now = datetime.now(timezone.utc)
-                if expiry_date > now:
-                    return {
-                        "status": "Pass",
-                        "explanation": f"Certificate is valid until {expiry['value']}.",
-                        "evidence": expiry.get("evidence"),
-                        "rule_id": rule_id,
-                    }
-                else:
-                    return {
-                        "status": "Fail",
-                        "explanation": f"Certificate expired on {expiry['value']}.",
-                        "evidence": expiry.get("evidence"),
-                        "rule_id": rule_id,
-                    }
-            except (ValueError, TypeError):
-                return {
-                    "status": "Needs review",
-                    "explanation": f"Extracted expiry date '{expiry['value']}' is in an invalid format.",
-                    "evidence": expiry.get("evidence"),
-                    "rule_id": rule_id,
-                }
+        try:
+            expiry_date = datetime.fromisoformat(expiry["value"].replace("Z", "+00:00"))
+        except (ValueError, TypeError, AttributeError):
+            return {
+                "status": "Needs review",
+                "explanation": (
+                    "The extracted expiry date could not be interpreted reliably; "
+                    "a reviewer must check it against the source document."
+                ),
+                "evidence": expiry.get("evidence"),
+                "rule_id": rule_id,
+            }
+
+        date_observation = (
+            "is before today"
+            if expiry_date.date() < datetime.now(timezone.utc).date()
+            else "is not before today"
+        )
+        return {
+            "status": "Needs review",
+            "explanation": (
+                f"The extracted expiry date {date_observation}; the date check "
+                "does not establish legal validity or compliance. A reviewer must "
+                "confirm the source and applicable policy."
+            ),
+            "evidence": expiry.get("evidence"),
+            "rule_id": rule_id,
+        }
 
     return {
         "status": "Not evaluated",
-        "explanation": "No evaluation logic implemented for this rule.",
+        "explanation": (
+            f"No evaluator is implemented for rule {rule_id}; it was not evaluated."
+        ),
         "evidence": None,
         "rule_id": rule_id,
     }

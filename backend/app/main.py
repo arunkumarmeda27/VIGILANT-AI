@@ -11,6 +11,7 @@ from app.api.routes import ai as ai_router
 from app.api.routes import institutions as institutions_router
 from app.api.routes import audit as audit_router
 from app.api.routes import compliance as compliance_router
+from app.api.routes import document_registry as document_registry_router
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ app.include_router(ai_router.router, prefix="/api/ai", tags=["AI Evidence"])
 app.include_router(institutions_router.router, prefix="/api/institutions", tags=["Institutions"])
 app.include_router(audit_router.router, prefix="/api/audit-events", tags=["Audit"])
 app.include_router(compliance_router.router, prefix="/api/compliance-assessments", tags=["Compliance"])
+app.include_router(document_registry_router.router, prefix="/api/document-types", tags=["Document Registry"])
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

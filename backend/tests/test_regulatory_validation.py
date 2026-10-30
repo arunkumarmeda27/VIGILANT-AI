@@ -8,6 +8,7 @@ from app.services.regulatory_validation import (
     RegistryValidationError,
     build_preview_context,
     evaluate_preview_eligibility,
+    evaluate_rule_result,
     load_registry,
 )
 
@@ -74,6 +75,51 @@ def test_all_rules_default_to_disabled_and_reviews_unfinished():
         assert rule["currentness_review"]["status"] == "not_reviewed"
         assert rule["applicability_review"]["status"] == "unknown"
         assert evaluate_preview_eligibility(rule, None) == "unknown"
+
+
+def test_current_registry_rule_ids_have_no_implemented_evaluator():
+    for rule in load_registry():
+        result = evaluate_rule_result(rule, {"fields": {}})
+
+        assert result["status"] == "Not evaluated"
+        assert "No evaluator is implemented" in result["explanation"]
+
+
+def test_extracted_certificate_number_is_not_a_validity_or_compliance_pass():
+    result = evaluate_rule_result(
+        {"rule_id": "FS-001"},
+        {
+            "fields": {
+                "certificate_number": {
+                    "value": "CERT-123",
+                    "status": "extracted",
+                    "evidence": "Certificate No: CERT-123",
+                }
+            }
+        },
+    )
+
+    assert result["status"] == "Needs review"
+    assert "authenticity" in result["explanation"]
+    assert "regulatory validity" in result["explanation"]
+
+
+def test_expiry_date_check_is_advisory_and_does_not_claim_compliance():
+    result = evaluate_rule_result(
+        {"rule_id": "FS-002"},
+        {
+            "fields": {
+                "expiry_date": {
+                    "value": "2000-01-01",
+                    "status": "extracted",
+                    "evidence": "Expiry Date: 2000-01-01",
+                }
+            }
+        },
+    )
+
+    assert result["status"] == "Needs review"
+    assert "does not establish legal validity or compliance" in result["explanation"]
 
 
 def test_duplicate_rule_ids_are_rejected(tmp_path):
